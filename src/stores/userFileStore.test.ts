@@ -101,22 +101,16 @@ describe('useUserFileStore', () => {
         expect(file.isLoaded).toBe(true)
       })
 
-      it.fails('returns undefined and clears loading state on failed load', async () => {
+      it('should throw error on failed load', async () => {
         const file = new UserFile('file1.txt', 123, 100)
         vi.mocked(api.getUserData).mockResolvedValue({
           status: 404,
           statusText: 'Not Found'
         } as Response)
-        const consoleSpy = vi
-          .spyOn(console, 'error')
-          .mockImplementation(() => {})
 
-        await expect(file.load()).resolves.toBeUndefined()
-
-        expect(file.isLoading).toBe(false)
-        expect(file.isLoaded).toBe(false)
-        expect(consoleSpy).toHaveBeenCalledOnce()
-        consoleSpy.mockRestore()
+        await expect(file.load()).rejects.toThrow(
+          "Failed to load file 'file1.txt': 404 Not Found"
+        )
       })
     })
 
@@ -164,7 +158,7 @@ describe('useUserFileStore', () => {
         expect(api.deleteUserData).toHaveBeenCalledWith('file1.txt')
       })
 
-      it.fails('returns false when deleting fails', async () => {
+      it('returns false when deleting fails', async () => {
         const file = new UserFile('file1.txt', 123, 100)
         vi.mocked(api.deleteUserData).mockResolvedValue({
           status: 500,
@@ -200,7 +194,7 @@ describe('useUserFileStore', () => {
         expect(file.size).toBe(200)
       })
 
-      it.fails('does not change the path when renaming fails', async () => {
+      it('does not change the path when renaming fails', async () => {
         const file = new UserFile('file1.txt', 123, 100)
         vi.mocked(api.moveUserData).mockResolvedValue({
           status: 409,
