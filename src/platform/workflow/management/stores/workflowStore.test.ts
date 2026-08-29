@@ -604,9 +604,10 @@ describe('useWorkflowStore', () => {
 
       // Perform rename
       const newPath = 'workflows/dir/renamed.json'
-      await store.renameWorkflow(workflow, newPath)
+      const result = await store.renameWorkflow(workflow, newPath)
 
       // Check that bookmark was transferred
+      expect(result).toBe(true)
       expect(bookmarkStore.isBookmarked(newPath)).toBe(true)
       expect(bookmarkStore.isBookmarked('workflows/dir/test.json')).toBe(false)
     })
@@ -704,8 +705,12 @@ describe('useWorkflowStore', () => {
       await bookmarkStore.setBookmarked(oldPath, true)
       vi.spyOn(workflow, 'rename').mockResolvedValue(false)
 
-      await store.renameWorkflow(workflow, 'workflows/renamed.json')
+      const result = await store.renameWorkflow(
+        workflow,
+        'workflows/renamed.json'
+      )
 
+      expect(result).toBe(false)
       expect(store.getWorkflowByPath(oldPath)?.path).toBe(oldPath)
       expect(bookmarkStore.isBookmarked(oldPath)).toBe(true)
     })
@@ -734,9 +739,10 @@ describe('useWorkflowStore', () => {
       await store.openWorkflow(workflow)
 
       // Delete the workflow
-      await store.deleteWorkflow(workflow)
+      const result = await store.deleteWorkflow(workflow)
 
       // Verify workflow was closed and deleted
+      expect(result).toBe(true)
       expect(workflow.delete).toHaveBeenCalled()
     })
 
@@ -762,8 +768,9 @@ describe('useWorkflowStore', () => {
       await bookmarkStore.setBookmarked(workflow.path, true)
       vi.spyOn(workflow, 'delete').mockResolvedValue(false)
 
-      await store.deleteWorkflow(workflow)
+      const result = await store.deleteWorkflow(workflow)
 
+      expect(result).toBe(false)
       expect(store.getWorkflowByPath(workflow.path)?.path).toBe(workflow.path)
       expect(bookmarkStore.isBookmarked(workflow.path)).toBe(true)
     })
