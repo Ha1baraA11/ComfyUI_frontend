@@ -64,7 +64,7 @@ describe('Dynamic Combos', () => {
     expect(node.inputs.length).toBe(2)
     expect(node.inputs[1].type).toBe('IMAGE')
   })
-  test.fails('Does not mutate when the dynamic widget is missing', () => {
+  test('Does not mutate when the dynamic widget is missing', () => {
     const node = testNode()
     addDynamicCombo(node, [['INT'], ['STRING']])
     const selector = node.widgets[0]
@@ -79,7 +79,7 @@ describe('Dynamic Combos', () => {
     expect(node.widgets).toEqual(widgetsBefore)
     expect(error).toHaveBeenCalledWith(expect.any(Error))
   })
-  test.fails('Does not mutate when the dynamic input socket is missing', () => {
+  test('Does not mutate when the dynamic input socket is missing', () => {
     const node = testNode()
     addDynamicCombo(node, [['INT'], ['IMAGE']])
     const selector = node.widgets[0]
