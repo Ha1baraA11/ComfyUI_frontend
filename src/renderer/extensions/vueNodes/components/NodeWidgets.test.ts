@@ -2,11 +2,12 @@ import { getActivePinia } from 'pinia'
 import { useCanvasStore } from '@/renderer/core/canvas/canvasStore'
 /* eslint-disable testing-library/no-container */
 /* eslint-disable testing-library/no-node-access */
-import { render } from '@testing-library/vue'
+import { render, screen } from '@testing-library/vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { NodeState } from '@/types/nodeState'
 import NodeWidgets from '@/renderer/extensions/vueNodes/components/NodeWidgets.vue'
+import { useAgentNodeSelectionStore } from '@/stores/agentNodeSelectionStore'
 import { useExecutionErrorStore } from '@/stores/executionErrorStore'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
 import { createNodeExecutionId } from '@/types/nodeIdentification'
@@ -230,6 +231,28 @@ describe('NodeWidgets', () => {
 
     expect(ids).toStrictEqual([seedAEntityId, seedBEntityId])
   })
+
+  it.for([
+    { picking: false, pointerClass: 'pointer-events-auto', inert: false },
+    { picking: true, pointerClass: 'pointer-events-none', inert: true }
+  ])(
+    'picking=$picking renders the widget grid with $pointerClass and inert=$inert',
+    ({ picking, pointerClass, inert }) => {
+      useAgentNodeSelectionStore().isActive = picking
+      const nodeId = toNodeId('test_node')
+      const id = widgetId(GRAPH_ID, nodeId, 'text')
+
+      renderComponent({
+        nodeData: createMockNodeData('TestNode', nodeId),
+        widgetIds: [id],
+        setupStores: () => registerWidgetState(id, { type: 'text' })
+      })
+
+      const grid = screen.getByTestId('node-widgets')
+      expect(grid).toHaveClass(pointerClass)
+      expect(grid.hasAttribute('inert')).toBe(inert)
+    }
+  )
 
   it('marks widgets with host execution errors', () => {
     const nodeId = toNodeId('test_node')

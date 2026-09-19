@@ -152,8 +152,9 @@ async function mockAgentBoot(
     agentOnboardingCompleted,
     crdtDebugEnabled,
     objectInfo,
-    postedMessages
-  }: Omit<AgentFixtures, 'agentPanel'>
+    postedMessages,
+    vueNodes
+  }: Omit<AgentFixtures, 'agentPanel'> & { vueNodes: boolean }
 ): Promise<void> {
   let consentAccepted = agentConsentAccepted
 
@@ -204,7 +205,8 @@ async function mockAgentBoot(
     features: agentFeatures(agentFlagEnabled),
     settings: {
       'Comfy.TutorialCompleted': true,
-      'Comfy.RightSidePanel.ShowErrorsTab': false
+      'Comfy.RightSidePanel.ShowErrorsTab': false,
+      ...(vueNodes && { 'Comfy.VueNodes.Enabled': true })
     },
     objectInfo
   })
@@ -401,7 +403,8 @@ export const agentTest = comfyPageFixture.extend<AgentFixtures>({
       page,
       postedMessages
     },
-    use
+    use,
+    testInfo
   ) => {
     await mockAgentBoot(page, {
       agentConsentAccepted,
@@ -412,7 +415,8 @@ export const agentTest = comfyPageFixture.extend<AgentFixtures>({
       agentOnboardingCompleted,
       crdtDebugEnabled,
       objectInfo,
-      postedMessages
+      postedMessages,
+      vueNodes: testInfo.tags.includes('@vue-nodes')
     })
     await use(page)
   },
