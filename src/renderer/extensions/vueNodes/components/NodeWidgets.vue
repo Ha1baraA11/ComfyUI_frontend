@@ -8,11 +8,8 @@
     :node-type
     :can-select-inputs
     :node-id="nodeData?.id"
-    :class="
-      shouldHandleNodePointerEvents
-        ? 'pointer-events-auto'
-        : 'pointer-events-none'
-    "
+    :class="canEditNodes ? 'pointer-events-auto' : 'pointer-events-none'"
+    :inert="!canEditNodes"
     @pointerdown.capture="handleBringToFront"
     @pointerdown="handleWidgetPointerEvent"
     @pointermove="handleWidgetPointerEvent"
@@ -39,7 +36,7 @@ interface NodeWidgetsProps {
 
 const { nodeData, widgetIds } = defineProps<NodeWidgetsProps>()
 
-const { shouldHandleNodePointerEvents, forwardEventToCanvas } =
+const { shouldHandleNodePointerEvents, canEditNodes, forwardEventToCanvas } =
   useCanvasInteractions()
 const { bringNodeToFront } = useNodeZIndex()
 

@@ -124,9 +124,6 @@ const appMock = vi.hoisted(() => {
           selectedItems: Set<LGraphNode>
           selectItems: ReturnType<typeof vi.fn>
           deselect: (node: LGraphNode) => void
-          multi_select: boolean
-          allow_dragnodes: boolean
-          selectOnly: boolean
           canvas: HTMLCanvasElement
         }
       | undefined
@@ -883,9 +880,6 @@ function setupNodeSelectionCanvas() {
     deselect,
     deselectAll,
     animateToBounds: vi.fn(),
-    multi_select: false,
-    allow_dragnodes: true,
-    selectOnly: false,
     canvas: canvasElement
   }
   appMock.canvas = canvas
@@ -977,7 +971,7 @@ async function enterNodeSelectionMode(): Promise<void> {
 async function startVueNodeSelection() {
   const state = setupNodeSelectionCanvas()
   const selectClickedNode = vi.fn((node: LGraphNode) => {
-    if (!state.canvas.multi_select) state.selectedItems.clear()
+    if (!useAgentNodeSelectionStore().isActive) state.selectedItems.clear()
     if (state.selectedItems.has(node)) state.selectedItems.delete(node)
     else state.selectedItems.add(node)
     canvasStore.updateSelectedItems()
@@ -2477,7 +2471,7 @@ describe('AgentPanelRoot lifecycle', () => {
       screen.getByRole('button', { name: i18n.global.t('agent.close') })
     )
 
-    expect(selection.canvas.multi_select).toBe(false)
+    expect(useAgentNodeSelectionStore().isActive).toBe(false)
     expect(telemetry.trackAgentCloseButtonClicked).toHaveBeenCalled()
     expect(telemetry.trackAgentPanelClosed).toHaveBeenCalledWith({
       source: 'close_button',
@@ -2493,7 +2487,7 @@ describe('AgentPanelRoot lifecycle', () => {
 
     selection.unmount()
 
-    expect(selection.canvas.multi_select).toBe(false)
+    expect(useAgentNodeSelectionStore().isActive).toBe(false)
     await expectLaterClickCannotRestoreAccumulatedNodes(selection)
   })
 
@@ -6582,7 +6576,7 @@ describe('AgentPanelRoot workflow binding', () => {
     mockMessagesEndpoint('wf-42')
     const state = setupNodeSelectionCanvas()
     const selectLegacyNode = (node: LGraphNode) => {
-      if (!state.canvas.multi_select) state.selectedItems.clear()
+      if (!useAgentNodeSelectionStore().isActive) state.selectedItems.clear()
       state.selectedItems.add(node)
       canvasStore.updateSelectedItems()
     }
@@ -6667,9 +6661,7 @@ describe('AgentPanelRoot workflow binding', () => {
     const bodies = mockMessagesEndpoint('wf-42')
     const selection = await startVueNodeSelection()
 
-    expect(selection.canvas.multi_select).toBe(true)
-    expect(selection.canvas.allow_dragnodes).toBe(false)
-    expect(selection.canvas.selectOnly).toBe(true)
+    expect(useAgentNodeSelectionStore().isActive).toBe(true)
     expect(selection.focus).toHaveBeenCalledOnce()
     expect(selection.selectClickedNode).toHaveBeenCalledTimes(2)
     expect(await screen.findByText('VAE Decode')).toBeInTheDocument()
@@ -6677,9 +6669,7 @@ describe('AgentPanelRoot workflow binding', () => {
 
     await sendFromComposer('explain this')
 
-    expect(selection.canvas.multi_select).toBe(false)
-    expect(selection.canvas.allow_dragnodes).toBe(true)
-    expect(selection.canvas.selectOnly).toBe(false)
+    expect(useAgentNodeSelectionStore().isActive).toBe(false)
     expect(bodies[0]).toMatchObject({
       selection: { node_ids: ['9', '12'] }
     })
@@ -6695,9 +6685,6 @@ describe('AgentPanelRoot workflow binding', () => {
     await nextTick()
 
     expect(useAgentNodeSelectionStore().isActive).toBe(false)
-    expect(selection.canvas.multi_select).toBe(false)
-    expect(selection.canvas.allow_dragnodes).toBe(true)
-    expect(selection.canvas.selectOnly).toBe(false)
     expect(canvasStore.selectedItems).toEqual([])
     expect([...selection.selectedItems]).toEqual([])
     expect(screen.getByText('VAE Decode')).toBeInTheDocument()
@@ -6717,7 +6704,7 @@ describe('AgentPanelRoot workflow binding', () => {
     canvasStore.currentGraph = fromPartial(nextGraph)
     await nextTick()
 
-    expect(selection.canvas.multi_select).toBe(false)
+    expect(useAgentNodeSelectionStore().isActive).toBe(false)
     await expectLaterClickCannotRestoreAccumulatedNodes(selection)
   })
 
@@ -6731,16 +6718,13 @@ describe('AgentPanelRoot workflow binding', () => {
     await nextTick()
 
     expect(useAgentNodeSelectionStore().isActive).toBe(false)
-    expect(selection.canvas.multi_select).toBe(false)
-    expect(selection.canvas.allow_dragnodes).toBe(true)
-    expect(selection.canvas.selectOnly).toBe(false)
     await expectLaterClickCannotRestoreAccumulatedNodes(selection)
   })
 
   it('keeps node selection active when the active workflow is renamed', async () => {
     makeTab()
     mockMessagesEndpoint('wf-42')
-    const selection = await startVueNodeSelection()
+    await startVueNodeSelection()
 
     const active = workflowStore.activeWorkflow
     if (!active) throw new Error('expected an active workflow')
@@ -6749,9 +6733,20 @@ describe('AgentPanelRoot workflow binding', () => {
     await nextTick()
 
     expect(useAgentNodeSelectionStore().isActive).toBe(true)
-    expect(selection.canvas.multi_select).toBe(true)
-    expect(selection.canvas.allow_dragnodes).toBe(false)
-    expect(selection.canvas.selectOnly).toBe(true)
+  })
+
+  it('ends node selection when the target workflow changes', async () => {
+    makeTab()
+    mockMessagesEndpoint('wf-42')
+    const selection = await startVueNodeSelection()
+
+    useAgentPanelStore().setWorkflowTarget(
+      fromPartial<ComfyWorkflow>(addTab('workflows/other.json'))
+    )
+    await nextTick()
+
+    expect(useAgentNodeSelectionStore().isActive).toBe(false)
+    await expectLaterClickCannotRestoreAccumulatedNodes(selection)
   })
 
   it('keeps each workflow node selection separate after a graph load', async () => {
@@ -6813,9 +6808,6 @@ describe('AgentPanelRoot workflow binding', () => {
       selectedItems: new Set(),
       selectItems: vi.fn(),
       deselect: vi.fn(),
-      multi_select: false,
-      allow_dragnodes: true,
-      selectOnly: false,
       canvas: document.createElement('canvas')
     }
 
