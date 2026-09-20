@@ -454,9 +454,6 @@ describe('SelectionToolbox', () => {
         canEditNodes: { value: true } as ReturnType<
           typeof useCanvasInteractions
         >['canEditNodes'],
-        canOpenMenus: { value: true } as ReturnType<
-          typeof useCanvasInteractions
-        >['canOpenMenus'],
         canFocusWidgets: { value: true } as ReturnType<
           typeof useCanvasInteractions
         >['canFocusWidgets']
