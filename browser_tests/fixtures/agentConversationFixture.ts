@@ -301,10 +301,23 @@ export class AgentConversationHarness {
     // otherwise survive alongside the replayed conversation. Clear it before
     // opening the panel: every recorded-conversation assertion here expects
     // the canvas to end up holding exactly the conversation's own nodes.
-    await this.page.evaluate(
-      (json) => window.app!.loadGraphData(json, true, true),
-      BLANK_GRAPH
-    )
+    //
+    // Passing the active workflow as loadGraphData's 4th argument matters as
+    // much as the clear itself: omitting it (as a bare
+    // `loadGraphData(json, true, true)` does) repaints the canvas but leaves
+    // `activeWorkflow.changeTracker.activeState` holding the stock template,
+    // because `afterLoadNewGraph` only resyncs that tracked state when it is
+    // handed a real `ComfyWorkflow` (see workflowService.ts's
+    // `activateLoadedWorkflow`). The agent panel's own active-tab handling
+    // (`onAgentActiveTab` in AgentPanelRoot.vue) re-opens this same workflow
+    // once the conversation's first turn names it, and `openWorkflow()`
+    // reloads from that stale `activeState` — silently reintroducing the
+    // stock template's nodes mid-conversation, well after this clear ran.
+    await this.page.evaluate((json) => {
+      const activeWorkflow =
+        window.app!.extensionManager.workflow.activeWorkflow
+      return window.app!.loadGraphData(json, true, true, activeWorkflow)
+    }, BLANK_GRAPH)
 
     await this.page
       .getByRole('button', { name: OPEN_AGENT_LABEL, exact: true })
