@@ -427,15 +427,6 @@ describe('reconcileAgentAdapters', () => {
       expect(graph._nodes).toHaveLength(1)
     })
 
-    // Reproduces the fresh-session flicker: a hand-added node already on the
-    // canvas when the follower's very first frame lands. `createSession` (see
-    // ecsFollowerAdapter.ts) arms `reconcileNextFrame` unconditionally on
-    // every bind -- the brand-new session's first bind included, not just a
-    // tab-switch-return rebind -- so this first frame takes the full-reconcile
-    // branch, which retains only the nodes the doc payload itself names. A
-    // hand-added node was never sent to the doc, so it is not among them and
-    // `removeMissing` deletes its store record; the materializer's orphan
-    // sweep below then removes the live node from the canvas.
     it('keeps a hand-added node live through the first reconcile frame', () => {
       const graph = new LGraph()
       graph.add(new DummyNode())
@@ -444,21 +435,16 @@ describe('reconcileAgentAdapters', () => {
 
       const host = mint({ nodes: [], links: [] }, CATALOG)
       const follower = new FollowerDoc()
-      // Mirrors production's `localOnlyNodeIds` wiring in
-      // useAgentCrdtFollower.ts: live nodes the doc's node map has never held.
+      // This test owns adapter/materializer composition, not classification
+      // (covered by useAgentCrdtFollower.test.ts), so the hand-added node's
+      // id is supplied directly rather than re-deriving it from a copy of
+      // production's classifier.
       const adapter = new EcsFollowerAdapter(remoteMutations(scope), {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds: () => {
-          const docNodeIds = new Set(nodesMap(follower.doc).keys())
-          return {
-            nodeIds: new Set(
-              graph._nodes
-                .map((node) => String(node.id))
-                .filter((id) => !docNodeIds.has(id))
-            ),
-            linkIds: new Set()
-          }
-        }
+        localOnlyNodeIds: () => ({
+          nodeIds: new Set([String(handAdded.id)]),
+          linkIds: new Set()
+        })
       })
       adapter.bind('workflow', follower)
 

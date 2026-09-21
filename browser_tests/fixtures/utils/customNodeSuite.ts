@@ -7,21 +7,10 @@ import type {
   OpenPathsPointer
 } from '@/platform/workflow/persistence/base/draftTypes'
 import { StorageKeys } from '@/platform/workflow/persistence/base/storageKeys'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
+import { blankWorkflowGraph } from '@/scripts/blankWorkflowGraph'
 
 const CUSTOM_NODE_BLANK_WORKFLOW_PATH =
   'workflows/Custom Nodes E2E Blank Workflow.json'
-// Importing blankGraph evaluates import.meta.env in Playwright's Node process.
-const CUSTOM_NODE_BLANK_GRAPH: ComfyWorkflowJSON = {
-  last_node_id: 0,
-  last_link_id: 0,
-  nodes: [],
-  links: [],
-  groups: [],
-  config: {},
-  extra: {},
-  version: 0.4
-}
 
 export async function installCustomNodeBlankStartup(page: Page): Promise<void> {
   const workspaceId = 'personal'
@@ -42,7 +31,7 @@ export async function installCustomNodeBlankStartup(page: Page): Promise<void> {
     }
   }
   const payload: DraftPayloadV2 = {
-    data: JSON.stringify(CUSTOM_NODE_BLANK_GRAPH),
+    data: JSON.stringify(blankWorkflowGraph),
     updatedAt
   }
   const active: ActivePathPointer = { workspaceId, path }

@@ -1316,7 +1316,6 @@ describe('useAgentCrdtFollower', () => {
     })
 
     it('does not spend the one-shot on a frame where no live graph is available to protect anything', () => {
-      // Default getGraph (no override) always returns null.
       const { unmount } = mountFollower('wf-1')
       const intent = adapterState.intent!
 

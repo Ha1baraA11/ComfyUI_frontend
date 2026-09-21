@@ -382,11 +382,12 @@ interface TargetSession {
   applying: boolean
   /**
    * One-shot: true until this workflow's first full reconcile actually
-   * *completes* with `localOnlyNodeIds` consulted (see `everBound`), so a
-   * rebind before that happens (a rejected first batch, a quick
-   * unbind/rebind before any frame lands) leaves the shot available for the
-   * retry instead of burning it on a no-op. False for a tab-switch-return
-   * rebind once that has happened, which must stay authoritative to the doc.
+   * *completes* with `localOnlyNodeIds` consulted (see
+   * `protectedWorkflowIds`), so a rebind before that happens (a rejected
+   * first batch, a quick unbind/rebind before any frame lands) leaves the
+   * shot available for the retry instead of burning it on a no-op. False for
+   * a tab-switch-return rebind once that has happened, which must stay
+   * authoritative to the doc.
    */
   protectLocalOnlyOnce: boolean
 }
@@ -406,7 +407,7 @@ export class EcsFollowerAdapter {
    * that never gets a completed protected reconcile (a rejected first batch,
    * a rebind before any frame lands) leaves the next bind eligible again.
    */
-  private readonly everBound = new Set<string>()
+  private readonly protectedWorkflowIds = new Set<string>()
 
   constructor(
     private readonly mutations: MutationsForTarget,
@@ -415,8 +416,8 @@ export class EcsFollowerAdapter {
 
   bind(workflowId: string, follower: FollowerDoc): void {
     this.unbind(workflowId)
-    const firstBindEver = !this.everBound.has(workflowId)
-    const session = this.createSession(workflowId, follower, firstBindEver)
+    const needsProtection = !this.protectedWorkflowIds.has(workflowId)
+    const session = this.createSession(workflowId, follower, needsProtection)
     this.targets.set(workflowId, session)
     session.nodes.observeDeep(session.onNodesChanged)
     session.links.observe(session.onLinksChanged)
@@ -467,13 +468,13 @@ export class EcsFollowerAdapter {
 
   destroy(): void {
     for (const workflowId of [...this.targets.keys()]) this.unbind(workflowId)
-    this.everBound.clear()
+    this.protectedWorkflowIds.clear()
   }
 
   private createSession(
     workflowId: string,
     follower: FollowerDoc,
-    firstBindEver: boolean
+    needsProtection: boolean
   ): TargetSession {
     const session: TargetSession = {
       workflowId,
@@ -494,7 +495,7 @@ export class EcsFollowerAdapter {
       frameQueue: [],
       reconcileNextFrame: true,
       applying: false,
-      protectLocalOnlyOnce: firstBindEver,
+      protectLocalOnlyOnce: needsProtection,
       onNodesChanged: (_events): void => undefined,
       onLinksChanged: (_event): void => undefined
     }
@@ -567,6 +568,17 @@ export class EcsFollowerAdapter {
       reconcile && session.protectLocalOnlyOnce
         ? this.intent.localOnlyNodeIds(session.workflowId)
         : null
+    // Protection is required for this frame's full reconcile but currently
+    // unavailable (no live graph yet, though workflow scope already exists).
+    // Committing `removeMissing` now would prune the store against an empty
+    // retain set, and a later graph-ready reconcile would then run against
+    // stores this frame already pruned. Defer instead: leave the store
+    // untouched and keep `reconcileNextFrame` armed for a later frame where
+    // protection can actually be consulted.
+    if (reconcile && session.protectLocalOnlyOnce && localOnly === null) {
+      session.reconcileNextFrame = true
+      return false
+    }
     const committed = session.mutations.batch(frameContext(update), (batch) => {
       // A SubgraphNode host that is already live must never be rebuilt from
       // its doc entry: `reconcileNode` (and delete + `addNode`) replaces the
@@ -724,7 +736,7 @@ export class EcsFollowerAdapter {
     // for whenever one becomes available.
     if (committed && localOnly !== null) {
       session.protectLocalOnlyOnce = false
-      this.everBound.add(session.workflowId)
+      this.protectedWorkflowIds.add(session.workflowId)
     }
     // The pending sets were snapshotted and cleared before `batch` ran, so a
     // rejected batch (no scope, or validation failure) has already lost the

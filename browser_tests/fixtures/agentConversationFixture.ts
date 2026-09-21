@@ -7,8 +7,8 @@ import { createI18n } from 'vue-i18n'
 
 import enMessages from '@/locales/en/main.json' with { type: 'json' }
 import type { UserDataFullInfo } from '@/platform/remote/comfyui/types'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { ObjectInfoResponse } from '@/schemas/nodeDefSchema'
+import { blankWorkflowGraph } from '@/scripts/blankWorkflowGraph'
 import { toNodeId } from '@/types/nodeId'
 import type {
   AgentCancelAccepted,
@@ -54,21 +54,6 @@ const turnId = (turn: number): string =>
 const SOCKET_SID = '7d1f2e3a-4b5c-4d6e-8f90-1a2b3c4d5e6f'
 const PANEL_MOUNT_TIMEOUT = 30_000
 const CANCEL_TIMEOUT = 10_000
-// Mirrors `blankGraph` from `@/scripts/defaultGraph`, inlined rather than
-// imported: that module reads `import.meta.env` at module scope, which is
-// undefined under Playwright's own (non-Vite) test-file transform and
-// crashes collection for every project, not just this fixture's tests.
-const BLANK_GRAPH: ComfyWorkflowJSON = {
-  last_node_id: 0,
-  last_link_id: 0,
-  nodes: [],
-  links: [],
-  groups: [],
-  config: {},
-  extra: {},
-  version: 0.4
-}
-
 const OPEN_AGENT_LABEL = enMessages.agent.entryButton
 const SEND_LABEL = enMessages.agent.send
 const STOP_LABEL = enMessages.agent.stop
@@ -317,7 +302,7 @@ export class AgentConversationHarness {
       const activeWorkflow =
         window.app!.extensionManager.workflow.activeWorkflow
       return window.app!.loadGraphData(json, true, true, activeWorkflow)
-    }, BLANK_GRAPH)
+    }, blankWorkflowGraph)
 
     await this.page
       .getByRole('button', { name: OPEN_AGENT_LABEL, exact: true })
