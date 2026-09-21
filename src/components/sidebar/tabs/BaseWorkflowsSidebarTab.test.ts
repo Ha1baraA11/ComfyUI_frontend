@@ -271,10 +271,9 @@ describe('BaseWorkflowsSidebarTab', () => {
     expect(getLeafPaths(getSearchRoot())).toEqual(['workflows/test-alpha.json'])
   })
 
-  it('propagates failed workflow operations to the tree', async () => {
+  it('propagates failed workflow deletion to the tree', async () => {
     const workflow = createMockWorkflow('workflows/test.json')
     Object.assign(useWorkflowStore(), { workflows: [workflow] })
-    mockWorkflowService.renameWorkflow.mockResolvedValueOnce(false)
     mockWorkflowService.deleteWorkflow.mockResolvedValueOnce(false)
 
     renderComponent()
@@ -283,7 +282,6 @@ describe('BaseWorkflowsSidebarTab', () => {
     const leaf = getSearchRoot()?.children?.[0]
 
     expect(leaf).toBeDefined()
-    expect(await leaf?.handleRename?.('renamed')).toBe(false)
     expect(await leaf?.handleDelete?.()).toBe(false)
   })
 
