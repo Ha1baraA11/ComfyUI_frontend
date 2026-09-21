@@ -284,8 +284,18 @@ export class AgentConversationHarness {
     for (const [type, definition] of Object.entries(definitions))
       this.displayNames.set(type, definition.display_name || definition.name)
 
-    // The unauthenticated boot has no persisted workflow, so `app.ts` falls
-    // back to the product's stock starter template rather than a blank tab.
+    // GraphCanvas mounts after `window.app` already exists and only then
+    // awaits initializeWorkflow()/restoreWorkflowTabsState(), which load the
+    // stock starter template because the unauthenticated boot has no
+    // persisted workflow. Wait for that startup spinner to clear before
+    // touching the graph, otherwise its own default-graph load can land
+    // after ours and win the race, leaving the stock template's nodes (and
+    // sometimes a second tab) behind.
+    await this.page.getByTestId(TestIds.app.loadingOverlay).waitFor({
+      state: 'hidden',
+      timeout: PANEL_MOUNT_TIMEOUT
+    })
+
     // The follower's first-ever bind now protects whatever the doc has never
     // held (agent-crdt-first-bind-node-flicker), so that stock template would
     // otherwise survive alongside the replayed conversation. Clear it before
