@@ -3,7 +3,7 @@ import { cn } from '@comfyorg/tailwind-utils'
 
 import type {
   ActivityPart,
-  AgentAskSelection
+  AgentAskAnswer
 } from '../../../services/agent/agentMessageParts'
 import type {
   AgentPaywallAction,
@@ -11,6 +11,7 @@ import type {
 } from '../../../services/agent/agentPaywallPresentation'
 import ActivityTrace from './ActivityTrace.vue'
 import AgentPaywallCard from './AgentPaywallCard.vue'
+import AskUserCard from './AskUserCard.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import PermissionAskCard from './PermissionAskCard.vue'
 import RunApprovalCard from './RunApprovalCard.vue'
@@ -27,7 +28,7 @@ const { group } = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  answer: [askId: string, selection: AgentAskSelection]
+  answer: [askId: string, answer: AgentAskAnswer]
   openWorkflow: [workflowId: string, workflowName?: string]
   paywallAction: [action: AgentPaywallAction]
 }>()
@@ -56,7 +57,9 @@ const emit = defineEmits<{
     v-else-if="group.kind === 'runApproval'"
     :part="group.part"
     :answering="answeringAskIds.has(group.part.askId)"
-    @answer="(askId, selection) => emit('answer', askId, selection)"
+    @answer="
+      (askId, selection) => emit('answer', askId, { selected: [selection] })
+    "
     @open-workflow="
       (workflowId, workflowName) =>
         emit('openWorkflow', workflowId, workflowName)
@@ -66,7 +69,15 @@ const emit = defineEmits<{
     v-else-if="group.kind === 'permissionAsk'"
     :part="group.part"
     :answering="answeringAskIds.has(group.part.askId)"
-    @answer="(askId, selection) => emit('answer', askId, selection)"
+    @answer="
+      (askId, selection) => emit('answer', askId, { selected: [selection] })
+    "
+  />
+  <AskUserCard
+    v-else-if="group.kind === 'askUser'"
+    :part="group.part"
+    :answering="answeringAskIds.has(group.part.askId)"
+    @answer="(askId, answer) => emit('answer', askId, answer)"
   />
   <AgentPaywallCard
     v-else-if="group.kind === 'paywall'"

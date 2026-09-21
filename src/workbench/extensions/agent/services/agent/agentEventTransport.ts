@@ -6,7 +6,7 @@ import type {
   ThinkingPart,
   ToolPart
 } from './agentMessageParts'
-import { snapshotMessage, toAskPart } from './agentMessageParts'
+import { isAskPart, snapshotMessage, toAskPart } from './agentMessageParts'
 
 export type AgentChatEvent = Extract<
   AgentWsEvent,
@@ -137,9 +137,7 @@ export function createAgentEventTransport(
       }
       case 'agent_ask_resolved':
         message.parts = message.parts.filter(
-          (part) =>
-            (part.type !== 'runApproval' && part.type !== 'permissionAsk') ||
-            part.askId !== event.data.ask_id
+          (part) => !isAskPart(part) || part.askId !== event.data.ask_id
         )
         break
       case 'agent_message_delta':

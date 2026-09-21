@@ -1,4 +1,5 @@
 import type {
+  AskUserPart,
   NoticePart,
   PaywallPart,
   PermissionAskPart,
@@ -15,3 +16,4 @@ export type AgentMessageGroup =
   | { kind: 'tabLinks'; parts: TabLinkPart[] }
   | { kind: 'runApproval'; part: RunApprovalPart }
   | { kind: 'permissionAsk'; part: PermissionAskPart }
+  | { kind: 'askUser'; part: AskUserPart }
