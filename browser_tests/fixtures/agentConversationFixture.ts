@@ -10,6 +10,7 @@ import { createI18n } from 'vue-i18n'
 
 import enMessages from '@/locales/en/main.json' with { type: 'json' }
 import type { ObjectInfoResponse } from '@/schemas/nodeDefSchema'
+import { blankGraph } from '@/scripts/defaultGraph'
 import { toNodeId } from '@/types/nodeId'
 import type {
   AgentCancelAccepted,
@@ -266,6 +267,18 @@ export class AgentConversationHarness {
     const definitions = (await (await objectInfo).json()) as ObjectInfoResponse
     for (const [type, definition] of Object.entries(definitions))
       this.displayNames.set(type, definition.display_name || definition.name)
+
+    // The unauthenticated boot has no persisted workflow, so `app.ts` falls
+    // back to the product's stock starter template rather than a blank tab.
+    // The follower's first-ever bind now protects whatever the doc has never
+    // held (agent-crdt-first-bind-node-flicker), so that stock template would
+    // otherwise survive alongside the replayed conversation. Clear it before
+    // opening the panel: every recorded-conversation assertion here expects
+    // the canvas to end up holding exactly the conversation's own nodes.
+    await this.page.evaluate(
+      (json) => window.app!.loadGraphData(json, true, true),
+      blankGraph
+    )
 
     await this.page
       .getByRole('button', { name: OPEN_AGENT_LABEL, exact: true })
