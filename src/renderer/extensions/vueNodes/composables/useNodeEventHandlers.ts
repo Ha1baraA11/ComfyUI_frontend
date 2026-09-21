@@ -55,7 +55,7 @@ function useNodeEventHandlersIndividual() {
 
     // Bring node to front when clicked (similar to LiteGraph behavior)
     // Skip if node is pinned to avoid unwanted movement
-    if (!node.flags.pinned) {
+    if (!node.flags.pinned && canEditNodes.value) {
       bringNodeToFront(nodeId)
     }
 
@@ -139,7 +139,7 @@ function useNodeEventHandlersIndividual() {
       canvasStore.canvas.select(node)
       canvasStore.updateSelectedItems()
       // Bring node to front when selected (unless pinned)
-      if (!node.flags.pinned) {
+      if (!node.flags.pinned && canEditNodes.value) {
         bringNodeToFront(nodeId)
       }
       return
@@ -150,7 +150,7 @@ function useNodeEventHandlersIndividual() {
     } else {
       canvasStore.canvas.select(node)
       // Bring node to front when selected (unless pinned)
-      if (!node.flags.pinned) {
+      if (!node.flags.pinned && canEditNodes.value) {
         bringNodeToFront(nodeId)
       }
     }
