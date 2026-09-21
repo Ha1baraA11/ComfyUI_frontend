@@ -10,6 +10,7 @@ import {
 import type { Ref } from 'vue'
 import * as Y from 'yjs'
 
+import { inputLinkId, outputLinkIds } from '@/lib/litegraph/src/node/slotLinks'
 import { reportError } from '@/platform/telemetry/reportError'
 import { api } from '@/scripts/api'
 import type { RemoteMutationContext } from '@/types/graphMutationContext'
@@ -30,7 +31,10 @@ import { recordDevEvent } from './devPanelLog'
 import type { CrdtDebugSnapshot } from './crdtSnapshot'
 import { readCrdtSnapshot } from './crdtSnapshot'
 import { DocFrameClient } from './docFrameClient'
-import type { MutationsForTarget } from './ecsFollowerAdapter'
+import type {
+  LocalOnlyGraphIds,
+  MutationsForTarget
+} from './ecsFollowerAdapter'
 import type { GraphOperation } from './graphOperations'
 import type { ClassifiedDocUpdate } from './layoutFollowerBridge'
 import { LayoutFollowerBridge } from './layoutFollowerBridge'
@@ -346,18 +350,64 @@ function startAgentCrdtFollower(
     }
     return pending
   }
-  // Live nodes the doc has never held (a hand-added node from before the
-  // follower ever bound). Read only for a brand-new session's first full
-  // reconcile -- see `EcsFollowerAdapter`'s `protectLocalOnlyOnce`.
-  const localOnlyNodeIds = (_workflowId: string): ReadonlySet<string> => {
+  // Doc node ids this session has ever observed, per workflow. Unlike
+  // `knownDocNodeIds` below (which tracks only the *current* doc for
+  // dev-panel diffing and is reset on every retarget), this only grows: a
+  // node the agent legitimately deletes while this client is briefly
+  // disconnected (a tab-switch-return rebind, a reconnect blip) must stay
+  // excluded from `localOnlyNodeIds` even once it drops out of the current
+  // doc snapshot. Cleared per workflow only on a genuine lineage break
+  // (`doc_reset`).
+  const everSeenDocNodeIds = new Map<string, Set<string>>()
+  const rememberDocNodeIds = (
+    workflowId: string,
+    ids: ReadonlySet<string>
+  ): void => {
+    const seen = everSeenDocNodeIds.get(workflowId) ?? new Set<string>()
+    for (const id of ids) seen.add(id)
+    everSeenDocNodeIds.set(workflowId, seen)
+  }
+  const incidentLinkIds = (
+    graph: MaterializableGraph,
+    id: NodeId
+  ): number[] => {
+    const node = graph._nodes_by_id[id]
+    if (!node) return []
+    const ids: number[] = []
+    for (let slot = 0; slot < node.inputs.length; slot++) {
+      const linkId = inputLinkId(graph, id, slot)
+      if (linkId !== undefined) ids.push(linkId)
+    }
+    for (let slot = 0; slot < node.outputs.length; slot++) {
+      ids.push(...outputLinkIds(graph, id, slot))
+    }
+    return ids
+  }
+  // Live nodes this session's doc has never held (a hand-added node from
+  // before the follower ever protected a reconcile), plus the live links
+  // incident to them -- `removeMissing` sweeps a protected node's links just
+  // as readily as the node itself unless those are retained too. Read only
+  // for a brand-new session's first *completed* full reconcile -- see
+  // `EcsFollowerAdapter`'s `protectLocalOnlyOnce` -- and only for the
+  // workflow this composable actually has bound, so a reconcile can never
+  // borrow another workflow's live graph.
+  const localOnlyNodeIds = (workflowId: string): LocalOnlyGraphIds | null => {
+    if (workflowId !== boundWorkflowId) return null
     const graph = getGraph()
-    if (!graph) return new Set()
-    const docNodeIds = currentDocNodeIds()
-    return new Set(
+    if (!graph) return null
+    const everSeen = everSeenDocNodeIds.get(workflowId) ?? new Set<string>()
+    const nodeIds = new Set(
       graph._nodes
         .map((node) => String(node.id))
-        .filter((id) => !docNodeIds.has(id))
+        .filter((id) => !everSeen.has(id))
     )
+    const linkIds = new Set<number>()
+    for (const id of nodeIds) {
+      const nodeId = parseNodeId(id)
+      if (!nodeId) continue
+      for (const linkId of incidentLinkIds(graph, nodeId)) linkIds.add(linkId)
+    }
+    return { nodeIds, linkIds }
   }
   const projection = new AgentCrdtProjection(
     graphMutations,
@@ -445,6 +495,10 @@ function startAgentCrdtFollower(
       incrementOutcome('skipped')
       return
     }
+    // Before reconciling: this frame's own merge already landed in the doc,
+    // so folding its current node ids in now means `localOnlyNodeIds` sees
+    // them as "ever held" from this very first frame onward.
+    rememberDocNodeIds(update.workflowId, currentDocNodeIds())
     lifecycle.onDocumentUpdate()
     updatesApplied.value = bridge.follower.updatesApplied
     lastFrameType.value = event.type
@@ -507,6 +561,7 @@ function startAgentCrdtFollower(
     lastFrameType.value = event.type
     lifecycle.clearStaleProbe()
     knownDocNodeIds = new Set()
+    everSeenDocNodeIds.delete(detail.workflowId)
     pendingLiveNodeIds.clear()
     confirmedDeletes.clear()
     recordDevEvent(

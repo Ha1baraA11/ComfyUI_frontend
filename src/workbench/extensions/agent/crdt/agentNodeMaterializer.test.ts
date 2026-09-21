@@ -445,17 +445,19 @@ describe('reconcileAgentAdapters', () => {
       const host = mint({ nodes: [], links: [] }, CATALOG)
       const follower = new FollowerDoc()
       // Mirrors production's `localOnlyNodeIds` wiring in
-      // useAgentCrdtFollower.ts: live nodes the doc's node map does not (yet)
-      // list.
+      // useAgentCrdtFollower.ts: live nodes the doc's node map has never held.
       const adapter = new EcsFollowerAdapter(remoteMutations(scope), {
         pendingDeletes: () => new Set(),
         localOnlyNodeIds: () => {
           const docNodeIds = new Set(nodesMap(follower.doc).keys())
-          return new Set(
-            graph._nodes
-              .map((node) => String(node.id))
-              .filter((id) => !docNodeIds.has(id))
-          )
+          return {
+            nodeIds: new Set(
+              graph._nodes
+                .map((node) => String(node.id))
+                .filter((id) => !docNodeIds.has(id))
+            ),
+            linkIds: new Set()
+          }
         }
       })
       adapter.bind('workflow', follower)

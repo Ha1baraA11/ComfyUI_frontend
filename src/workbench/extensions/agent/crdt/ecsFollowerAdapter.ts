@@ -50,6 +50,18 @@ export type MutationsForTarget =
   | ((workflowId: string) => GraphMutations)
 
 /**
+ * Live node ids (string keys) the doc has never held, plus the live link ids
+ * incident to them. `null` means the caller could not determine this for the
+ * frame (no live graph to consult, or the reconcile belongs to a workflow
+ * this caller has not bound) -- distinct from an empty result, which means
+ * the caller looked and genuinely found nothing to protect.
+ */
+export interface LocalOnlyGraphIds {
+  nodeIds: ReadonlySet<string>
+  linkIds: ReadonlySet<number>
+}
+
+/**
  * The local human's edits the host has not yet reflected in the doc. A full
  * reconcile treats the doc as authoritative for everything else; without
  * this seam it would recreate a node whose delete is still on its way.
@@ -58,17 +70,19 @@ export interface LocalIntent {
   /** Doc node ids (string keys) with a pending human `delete_node`. */
   pendingDeletes(workflowId: string): ReadonlySet<string>
   /**
-   * Live node ids (string keys) the doc has never held. Consulted only for
-   * the one full reconcile a brand-new session's first bind runs: a node
-   * added by hand before the follower ever bound has no doc record and must
-   * not be swept as "missing" by that first frame's `removeMissing`.
+   * Live node/link ids the doc has never held. Consulted only for the one
+   * full reconcile a session's first *completed* protected bind runs: a node
+   * added by hand before the follower ever protected a reconcile has no doc
+   * record and must not be swept as "missing" by that frame's
+   * `removeMissing` -- nor its incident links, which `removeMissing` would
+   * otherwise sweep right alongside a node it does retain.
    */
-  localOnlyNodeIds(workflowId: string): ReadonlySet<string>
+  localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
 }
 
 const NO_LOCAL_INTENT: LocalIntent = {
   pendingDeletes: () => new Set(),
-  localOnlyNodeIds: () => new Set()
+  localOnlyNodeIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
 }
 
 function plain(value: unknown): unknown {
@@ -367,9 +381,12 @@ interface TargetSession {
   reconcileNextFrame: boolean
   applying: boolean
   /**
-   * One-shot: true only across this session's first full reconcile, so
-   * `localOnlyNodeIds` is consulted for a brand-new bind and never for a
-   * tab-switch-return rebind, which must stay authoritative to the doc.
+   * One-shot: true until this workflow's first full reconcile actually
+   * *completes* with `localOnlyNodeIds` consulted (see `everBound`), so a
+   * rebind before that happens (a rejected first batch, a quick
+   * unbind/rebind before any frame lands) leaves the shot available for the
+   * retry instead of burning it on a no-op. False for a tab-switch-return
+   * rebind once that has happened, which must stay authoritative to the doc.
    */
   protectLocalOnlyOnce: boolean
 }
@@ -382,7 +399,13 @@ interface TargetSession {
  */
 export class EcsFollowerAdapter {
   private readonly targets = new Map<string, TargetSession>()
-  /** Workflow ids that have ever been bound, for the lifetime of this adapter. */
+  /**
+   * Workflow ids whose first full reconcile has completed with
+   * `localOnlyNodeIds` actually consulted (see `applyQueuedFrame`), for the
+   * lifetime of this adapter. Marked there, not at `bind` time, so a bind
+   * that never gets a completed protected reconcile (a rejected first batch,
+   * a rebind before any frame lands) leaves the next bind eligible again.
+   */
   private readonly everBound = new Set<string>()
 
   constructor(
@@ -393,7 +416,6 @@ export class EcsFollowerAdapter {
   bind(workflowId: string, follower: FollowerDoc): void {
     this.unbind(workflowId)
     const firstBindEver = !this.everBound.has(workflowId)
-    this.everBound.add(workflowId)
     const session = this.createSession(workflowId, follower, firstBindEver)
     this.targets.set(workflowId, session)
     session.nodes.observeDeep(session.onNodesChanged)
@@ -445,6 +467,7 @@ export class EcsFollowerAdapter {
 
   destroy(): void {
     for (const workflowId of [...this.targets.keys()]) this.unbind(workflowId)
+    this.everBound.clear()
   }
 
   private createSession(
@@ -536,6 +559,14 @@ export class EcsFollowerAdapter {
     const removedLinkIds = [...changedLinks].flatMap(([id, link]) =>
       link && !isIncompatibleLinkType(link) ? [] : [Number(id)]
     )
+    // Asked, and possibly spent (see below), before `batch` runs: only this
+    // session's first full reconcile asks at all, and `null` (no live graph,
+    // or a workflow this caller has not bound) is kept distinct from an
+    // empty result so a no-op frame never spends the one-shot.
+    const localOnly =
+      reconcile && session.protectLocalOnlyOnce
+        ? this.intent.localOnlyNodeIds(session.workflowId)
+        : null
     const committed = session.mutations.batch(frameContext(update), (batch) => {
       // A SubgraphNode host that is already live must never be rebuilt from
       // its doc entry: `reconcileNode` (and delete + `addNode`) replaces the
@@ -557,13 +588,8 @@ export class EcsFollowerAdapter {
 
       if (reconcile) {
         const pendingDeletes = this.intent.pendingDeletes(session.workflowId)
-        // Only this session's very first full reconcile asks; a
-        // tab-switch-return rebind's full reconcile must stay authoritative
-        // to the doc, so it never protects a node the doc no longer holds.
-        const localOnlyNodeIds = session.protectLocalOnlyOnce
-          ? this.intent.localOnlyNodeIds(session.workflowId)
-          : new Set<string>()
-        session.protectLocalOnlyOnce = false
+        const localOnlyNodeIds = localOnly?.nodeIds ?? new Set<string>()
+        const localOnlyLinkIds = localOnly?.linkIds ?? new Set<number>()
         const nodes = [...session.nodes.keys()]
           .filter((id) => !pendingDeletes.has(id))
           .flatMap((id) => {
@@ -596,7 +622,7 @@ export class EcsFollowerAdapter {
             ...nodes.map(({ id }) => toNodeId(id)),
             ...[...localOnlyNodeIds].map((id) => toNodeId(id))
           ],
-          links.map(({ id }) => id)
+          [...links.map(({ id }) => id), ...localOnlyLinkIds]
         )
         for (const payload of nodes) upsertNode(payload, 'reconcile')
         for (const link of links) batch.connect(link)
@@ -691,6 +717,15 @@ export class EcsFollowerAdapter {
       for (const link of incomingLinks) batch.connect(link)
     })
 
+    // The one-shot is spent only once a reconcile that actually consulted
+    // `localOnlyNodeIds` (`localOnly !== null`) also *committed*: a rejected
+    // batch must leave it armed for the retry, and a frame where the caller
+    // had nothing to protect with (no live graph yet) must leave it armed
+    // for whenever one becomes available.
+    if (committed && localOnly !== null) {
+      session.protectLocalOnlyOnce = false
+      this.everBound.add(session.workflowId)
+    }
     // The pending sets were snapshotted and cleared before `batch` ran, so a
     // rejected batch (no scope, or validation failure) has already lost the
     // incremental record of this frame. Arm a full reconcile for the next

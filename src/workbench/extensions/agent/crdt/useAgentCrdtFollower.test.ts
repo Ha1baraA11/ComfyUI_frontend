@@ -22,6 +22,7 @@ import { toNodeId } from '@/types/nodeId'
 import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/agentPanelStore'
 
 import type { MaterializableGraph } from './agentNodeMaterializer'
+import type { LocalOnlyGraphIds } from './ecsFollowerAdapter'
 import type { BatchOutcome } from './opSender'
 import type { DocFrameTransport } from './docFrameClient'
 
@@ -56,6 +57,7 @@ const clientState = vi.hoisted(() => ({
 const adapterState = vi.hoisted(() => ({
   intent: null as {
     pendingDeletes(workflowId: string): ReadonlySet<string>
+    localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
   } | null,
   bind: vi.fn(),
   unbind: vi.fn(),
@@ -128,6 +130,7 @@ vi.mock<unknown>(import('./ecsFollowerAdapter'), () => ({
       _mutations: unknown,
       intent: {
         pendingDeletes(workflowId: string): ReadonlySet<string>
+        localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
       }
     ) {
       adapterState.intent = intent
@@ -1276,6 +1279,60 @@ describe('useAgentCrdtFollower', () => {
       })
 
       expect(onMaterialized).not.toHaveBeenCalled()
+      unmount()
+    })
+  })
+
+  describe('localOnlyNodeIds (first-reconcile local-only protection hook)', () => {
+    it('excludes a node the doc has ever held even after it drops from the current snapshot, but still flags one the doc never held', () => {
+      const fakeGraph = {
+        rootGraph: { subgraphs: new Map() },
+        setDirtyCanvas: vi.fn(),
+        _nodes: [{ id: toNodeId(1) }, { id: toNodeId(2) }],
+        _nodes_by_id: {
+          [toNodeId(1)]: { inputs: [], outputs: [] },
+          [toNodeId(2)]: { inputs: [], outputs: [] }
+        }
+      } as unknown as MaterializableGraph
+      const { unmount } = mountFollower('wf-1', true, () => fakeGraph)
+      const intent = adapterState.intent!
+      let docNodes: Record<string, unknown> = { '1': {} }
+      bridge().follower.doc.getMap = () => ({ toJSON: () => docNodes })
+
+      // The doc shows node 1 on this frame -- remembered as "ever held".
+      dispatchFrame('doc_update', { workflowId: 'wf-1', seq: 1 })
+
+      // Node 1 is later deleted from the doc while this client is briefly
+      // disconnected (a reconnect blip, a tab-switch-return rebind): it drops
+      // out of the CURRENT snapshot, but must still not be mistaken for a
+      // hand-added, never-seen node. Node 2 genuinely never appeared in any
+      // doc frame, so it alone is flagged as local-only.
+      docNodes = {}
+      expect(intent.localOnlyNodeIds('wf-1')).toEqual({
+        nodeIds: new Set(['2']),
+        linkIds: new Set()
+      })
+      unmount()
+    })
+
+    it('does not spend the one-shot on a frame where no live graph is available to protect anything', () => {
+      // Default getGraph (no override) always returns null.
+      const { unmount } = mountFollower('wf-1')
+      const intent = adapterState.intent!
+
+      expect(intent.localOnlyNodeIds('wf-1')).toBeNull()
+      unmount()
+    })
+
+    it('never answers for a workflow other than the one this session has bound', () => {
+      const fakeGraph = {
+        _nodes: [{ id: toNodeId(1) }],
+        _nodes_by_id: { [toNodeId(1)]: { inputs: [], outputs: [] } }
+      } as unknown as MaterializableGraph
+      const { unmount } = mountFollower('wf-1', true, () => fakeGraph)
+      const intent = adapterState.intent!
+
+      expect(intent.localOnlyNodeIds('wf-2')).toBeNull()
       unmount()
     })
   })
