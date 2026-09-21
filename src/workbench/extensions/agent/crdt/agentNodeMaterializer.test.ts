@@ -427,6 +427,71 @@ describe('reconcileAgentAdapters', () => {
       expect(graph._nodes).toHaveLength(1)
     })
 
+    // Reproduces the fresh-session flicker: a hand-added node already on the
+    // canvas when the follower's very first frame lands. `createSession` (see
+    // ecsFollowerAdapter.ts) arms `reconcileNextFrame` unconditionally on
+    // every bind -- the brand-new session's first bind included, not just a
+    // tab-switch-return rebind -- so this first frame takes the full-reconcile
+    // branch, which retains only the nodes the doc payload itself names. A
+    // hand-added node was never sent to the doc, so it is not among them and
+    // `removeMissing` deletes its store record; the materializer's orphan
+    // sweep below then removes the live node from the canvas.
+    it('keeps a hand-added node live through the first reconcile frame', () => {
+      const graph = new LGraph()
+      graph.add(new DummyNode())
+      const handAdded = graph._nodes[0]
+      const scope = graphScopeOf(graph)
+
+      const host = mint({ nodes: [], links: [] }, CATALOG)
+      const follower = new FollowerDoc()
+      // Mirrors production's `localOnlyNodeIds` wiring in
+      // useAgentCrdtFollower.ts: live nodes the doc's node map does not (yet)
+      // list.
+      const adapter = new EcsFollowerAdapter(remoteMutations(scope), {
+        pendingDeletes: () => new Set(),
+        localOnlyNodeIds: () => {
+          const docNodeIds = new Set(nodesMap(follower.doc).keys())
+          return new Set(
+            graph._nodes
+              .map((node) => String(node.id))
+              .filter((id) => !docNodeIds.has(id))
+          )
+        }
+      })
+      adapter.bind('workflow', follower)
+
+      const agentNodeId = Number(handAdded.id) + 100
+      const opId = 'agent-op-1'
+      const result = applyOps(
+        host,
+        [
+          agentOperation(opId, 1, {
+            op: 'add_node',
+            node_id: agentNodeId,
+            class_type: 'dummy',
+            pos: [10, 20],
+            node: nodePayload(agentNodeId)
+          })
+        ],
+        CATALOG
+      )
+      expect(result.outcomes).toEqual([{ op_id: opId, outcome: 'applied' }])
+
+      const update = Y.encodeStateAsUpdate(host)
+      follower.applyRemoteUpdate(update)
+      expect(
+        adapter.applyFrame({ workflowId: 'workflow', seq: 1, update })
+      ).toBe(true)
+      reconcileAgentAdapters(graph)
+
+      expect(graph.getNodeById(handAdded.id)).toBe(handAdded)
+      expect(graph._nodes.map(({ id }) => id)).toContain(handAdded.id)
+
+      adapter.destroy()
+      follower.destroy()
+      host.destroy()
+    })
+
     it('builds an error placeholder for an unregistered type', () => {
       const graph = new LGraph()
       seedAgentAddedNode(graph, 1, 'not-a-registered-type')

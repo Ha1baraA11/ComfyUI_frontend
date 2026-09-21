@@ -128,7 +128,8 @@ function setupRaceUntilReturn() {
           .flatMap((batch) => batch.ops)
           .filter((op) => op.op === 'delete_node')
           .map((op) => String(op.node_id))
-      )
+      ),
+    localOnlyNodeIds: () => new Set()
   })
   adapter.bind(WORKFLOW, follower)
 

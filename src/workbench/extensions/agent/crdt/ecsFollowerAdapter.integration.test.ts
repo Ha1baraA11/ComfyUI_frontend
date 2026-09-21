@@ -1461,7 +1461,8 @@ describe('EcsFollowerAdapter integration', () => {
       )
       const follower = new FollowerDoc()
       const adapter = new EcsFollowerAdapter(mutations, {
-        pendingDeletes: () => pendingDeletes
+        pendingDeletes: () => pendingDeletes,
+        localOnlyNodeIds: () => new Set()
       })
       adapter.bind('wf', follower)
       const update = Y.encodeStateAsUpdate(host)

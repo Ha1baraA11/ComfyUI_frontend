@@ -346,11 +346,24 @@ function startAgentCrdtFollower(
     }
     return pending
   }
+  // Live nodes the doc has never held (a hand-added node from before the
+  // follower ever bound). Read only for a brand-new session's first full
+  // reconcile -- see `EcsFollowerAdapter`'s `protectLocalOnlyOnce`.
+  const localOnlyNodeIds = (_workflowId: string): ReadonlySet<string> => {
+    const graph = getGraph()
+    if (!graph) return new Set()
+    const docNodeIds = currentDocNodeIds()
+    return new Set(
+      graph._nodes
+        .map((node) => String(node.id))
+        .filter((id) => !docNodeIds.has(id))
+    )
+  }
   const projection = new AgentCrdtProjection(
     graphMutations,
     getGraph,
     () => bridge.follower.doc,
-    { pendingDeletes: pendingHumanDeletes }
+    { pendingDeletes: pendingHumanDeletes, localOnlyNodeIds }
   )
   const coalescer = createOpCoalescer(sender.admit, sender.flush)
 

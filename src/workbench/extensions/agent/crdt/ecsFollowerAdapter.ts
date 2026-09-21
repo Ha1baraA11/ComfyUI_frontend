@@ -57,9 +57,19 @@ export type MutationsForTarget =
 export interface LocalIntent {
   /** Doc node ids (string keys) with a pending human `delete_node`. */
   pendingDeletes(workflowId: string): ReadonlySet<string>
+  /**
+   * Live node ids (string keys) the doc has never held. Consulted only for
+   * the one full reconcile a brand-new session's first bind runs: a node
+   * added by hand before the follower ever bound has no doc record and must
+   * not be swept as "missing" by that first frame's `removeMissing`.
+   */
+  localOnlyNodeIds(workflowId: string): ReadonlySet<string>
 }
 
-const NO_LOCAL_INTENT: LocalIntent = { pendingDeletes: () => new Set() }
+const NO_LOCAL_INTENT: LocalIntent = {
+  pendingDeletes: () => new Set(),
+  localOnlyNodeIds: () => new Set()
+}
 
 function plain(value: unknown): unknown {
   if (value instanceof Y.Map || value instanceof Y.Array) return value.toJSON()
@@ -356,6 +366,12 @@ interface TargetSession {
   onLinksChanged: (event: Y.YMapEvent<unknown>) => void
   reconcileNextFrame: boolean
   applying: boolean
+  /**
+   * One-shot: true only across this session's first full reconcile, so
+   * `localOnlyNodeIds` is consulted for a brand-new bind and never for a
+   * tab-switch-return rebind, which must stay authoritative to the doc.
+   */
+  protectLocalOnlyOnce: boolean
 }
 
 /**
@@ -366,6 +382,8 @@ interface TargetSession {
  */
 export class EcsFollowerAdapter {
   private readonly targets = new Map<string, TargetSession>()
+  /** Workflow ids that have ever been bound, for the lifetime of this adapter. */
+  private readonly everBound = new Set<string>()
 
   constructor(
     private readonly mutations: MutationsForTarget,
@@ -374,7 +392,9 @@ export class EcsFollowerAdapter {
 
   bind(workflowId: string, follower: FollowerDoc): void {
     this.unbind(workflowId)
-    const session = this.createSession(workflowId, follower)
+    const firstBindEver = !this.everBound.has(workflowId)
+    this.everBound.add(workflowId)
+    const session = this.createSession(workflowId, follower, firstBindEver)
     this.targets.set(workflowId, session)
     session.nodes.observeDeep(session.onNodesChanged)
     session.links.observe(session.onLinksChanged)
@@ -429,7 +449,8 @@ export class EcsFollowerAdapter {
 
   private createSession(
     workflowId: string,
-    follower: FollowerDoc
+    follower: FollowerDoc,
+    firstBindEver: boolean
   ): TargetSession {
     const session: TargetSession = {
       workflowId,
@@ -450,6 +471,7 @@ export class EcsFollowerAdapter {
       frameQueue: [],
       reconcileNextFrame: true,
       applying: false,
+      protectLocalOnlyOnce: firstBindEver,
       onNodesChanged: (_events): void => undefined,
       onLinksChanged: (_event): void => undefined
     }
@@ -535,6 +557,13 @@ export class EcsFollowerAdapter {
 
       if (reconcile) {
         const pendingDeletes = this.intent.pendingDeletes(session.workflowId)
+        // Only this session's very first full reconcile asks; a
+        // tab-switch-return rebind's full reconcile must stay authoritative
+        // to the doc, so it never protects a node the doc no longer holds.
+        const localOnlyNodeIds = session.protectLocalOnlyOnce
+          ? this.intent.localOnlyNodeIds(session.workflowId)
+          : new Set<string>()
+        session.protectLocalOnlyOnce = false
         const nodes = [...session.nodes.keys()]
           .filter((id) => !pendingDeletes.has(id))
           .flatMap((id) => {
@@ -563,7 +592,10 @@ export class EcsFollowerAdapter {
           session.reportedErrors
         )
         batch.removeMissing(
-          nodes.map(({ id }) => toNodeId(id)),
+          [
+            ...nodes.map(({ id }) => toNodeId(id)),
+            ...[...localOnlyNodeIds].map((id) => toNodeId(id))
+          ],
           links.map(({ id }) => id)
         )
         for (const payload of nodes) upsertNode(payload, 'reconcile')
