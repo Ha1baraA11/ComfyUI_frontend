@@ -17,6 +17,7 @@ import type { RemoteMutationContext } from '@/types/graphMutationContext'
 import { parseNodeId } from '@/types/nodeId'
 import type { NodeId } from '@/types/nodeId'
 import { createUuidv4 } from '@/utils/uuid'
+import { useAgentCrdtDocHistoryStore } from '@/workbench/extensions/agent/stores/agent/agentCrdtDocHistoryStore'
 import { useAgentPanelStore } from '@/workbench/extensions/agent/stores/agent/agentPanelStore'
 
 import type { MaterializableGraph } from './agentNodeMaterializer'
@@ -350,23 +351,23 @@ function startAgentCrdtFollower(
     }
     return pending
   }
-  // Doc node ids this session has ever observed, per workflow. Unlike
+  // Doc node ids this client has ever observed, per workflow. Unlike
   // `knownDocNodeIds` below (which tracks only the *current* doc for
   // dev-panel diffing and is reset on every retarget), this only grows: a
   // node the agent legitimately deletes while this client is briefly
-  // disconnected (a tab-switch-return rebind, a reconnect blip) must stay
-  // excluded from `localOnlyNodeIds` even once it drops out of the current
-  // doc snapshot. Cleared per workflow only on a genuine lineage break
+  // disconnected (a tab-switch-return rebind, a reconnect blip, or this
+  // composable itself unmounting and remounting) must stay excluded from
+  // `localOnlyGraphIds` even once it drops out of the current doc snapshot.
+  // Backed by `agentCrdtDocHistoryStore`, which outlives this composable's
+  // own mount, rather than a Map recreated empty on every remount -- see
+  // that store's doc comment for the cold-page-load limit this cannot
+  // close. Cleared per workflow only on a genuine lineage break
   // (`doc_reset`).
-  const everSeenDocNodeIds = new Map<string, Set<string>>()
+  const docHistory = useAgentCrdtDocHistoryStore()
   const rememberDocNodeIds = (
     workflowId: string,
     ids: ReadonlySet<string>
-  ): void => {
-    const seen = everSeenDocNodeIds.get(workflowId) ?? new Set<string>()
-    for (const id of ids) seen.add(id)
-    everSeenDocNodeIds.set(workflowId, seen)
-  }
+  ): void => docHistory.remember(workflowId, ids)
   const incidentLinkIds = (
     graph: MaterializableGraph,
     id: NodeId
@@ -388,14 +389,14 @@ function startAgentCrdtFollower(
   // incident to them -- `removeMissing` sweeps a protected node's links just
   // as readily as the node itself unless those are retained too. Read only
   // for a brand-new session's first *completed* full reconcile -- see
-  // `EcsFollowerAdapter`'s `protectLocalOnlyOnce` -- and only for the
+  // `EcsFollowerAdapter`'s `needsProtection` -- and only for the
   // workflow this composable actually has bound, so a reconcile can never
   // borrow another workflow's live graph.
-  const localOnlyNodeIds = (workflowId: string): LocalOnlyGraphIds | null => {
+  const localOnlyGraphIds = (workflowId: string): LocalOnlyGraphIds | null => {
     if (workflowId !== boundWorkflowId) return null
     const graph = getGraph()
     if (!graph) return null
-    const everSeen = everSeenDocNodeIds.get(workflowId) ?? new Set<string>()
+    const everSeen = docHistory.everSeen(workflowId)
     const nodeIds = new Set(
       graph._nodes
         .map((node) => String(node.id))
@@ -413,7 +414,7 @@ function startAgentCrdtFollower(
     graphMutations,
     getGraph,
     () => bridge.follower.doc,
-    { pendingDeletes: pendingHumanDeletes, localOnlyNodeIds }
+    { pendingDeletes: pendingHumanDeletes, localOnlyGraphIds }
   )
   const coalescer = createOpCoalescer(sender.admit, sender.flush)
 
@@ -496,7 +497,7 @@ function startAgentCrdtFollower(
       return
     }
     // Before reconciling: this frame's own merge already landed in the doc,
-    // so folding its current node ids in now means `localOnlyNodeIds` sees
+    // so folding its current node ids in now means `localOnlyGraphIds` sees
     // them as "ever held" from this very first frame onward.
     rememberDocNodeIds(update.workflowId, currentDocNodeIds())
     lifecycle.onDocumentUpdate()
@@ -561,7 +562,7 @@ function startAgentCrdtFollower(
     lastFrameType.value = event.type
     lifecycle.clearStaleProbe()
     knownDocNodeIds = new Set()
-    everSeenDocNodeIds.delete(detail.workflowId)
+    docHistory.clear(detail.workflowId)
     pendingLiveNodeIds.clear()
     confirmedDeletes.clear()
     recordDevEvent(

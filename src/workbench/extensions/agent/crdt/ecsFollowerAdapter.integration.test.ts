@@ -4,13 +4,17 @@ import {
   mint,
   nodesMap
 } from '@comfyorg/comfy-multi-player'
-import type { Op, WidgetCatalog } from '@comfyorg/comfy-multi-player'
+import type {
+  Op,
+  WidgetCatalog,
+  WorkflowJSON
+} from '@comfyorg/comfy-multi-player'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { createGraphMutations } from './graphMutations'
 import { inertPlacementPort } from './__fixtures__/inertPlacementPort'
-import type { GraphMutations } from './graphMutations'
+import type { GraphMutations, GraphMutationsDeps } from './graphMutations'
 import { useLinkStore } from '@/stores/linkStore'
 import { useNodeDataStore } from '@/stores/nodeDataStore'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
@@ -22,6 +26,7 @@ import { widgetId } from '@/types/widgetId'
 
 import type { DocUpdate } from './docFrameClient'
 import { EcsFollowerAdapter } from './ecsFollowerAdapter'
+import type { LocalOnlyGraphIds } from './ecsFollowerAdapter'
 import { FollowerDoc } from './followerDoc'
 
 const catalog: WidgetCatalog = {
@@ -1462,7 +1467,7 @@ describe('EcsFollowerAdapter integration', () => {
       const follower = new FollowerDoc()
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => pendingDeletes,
-        localOnlyNodeIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
+        localOnlyGraphIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
       })
       adapter.bind('wf', follower)
       const update = Y.encodeStateAsUpdate(host)
@@ -1499,18 +1504,51 @@ describe('EcsFollowerAdapter integration', () => {
   })
 
   describe('local-only protection timing and scope', () => {
+    const LOCAL_HYDRATION_CONTEXT = {
+      source: 'agent-remote' as const,
+      actor: 'local-hydration',
+      opId: 'local-seed'
+    }
+
+    /** A `GraphMutations` scoped like these cases need, with an overridable `getScope`/`deleteNodes` for the ones that flex scope availability or assert on layout deletes. */
+    function localOnlyMutations(
+      overrides: {
+        getScope?: () => typeof scope | null
+        deleteNodes?: GraphMutationsDeps['layout']['deleteNodes']
+      } = {}
+    ): GraphMutations {
+      return createGraphMutations({
+        placement: inertPlacementPort,
+        getScope: overrides.getScope ?? (() => scope),
+        layout: {
+          createNode: vi.fn(),
+          deleteNodes: overrides.deleteNodes ?? vi.fn()
+        }
+      })
+    }
+
+    /** Mints a host doc for `graph` and encodes its full state as an update. Registers the host for teardown. */
+    function mintUpdate(graph: WorkflowJSON): Uint8Array {
+      const host = mint(graph, catalog)
+      onTestFinished(() => host.destroy())
+      return Y.encodeStateAsUpdate(host)
+    }
+
+    /** Binds a fresh `FollowerDoc` to `adapter` under `workflowId` and applies `update` to it. Registers the follower for teardown. */
+    function bindAndApply(
+      adapter: EcsFollowerAdapter,
+      workflowId: string,
+      update: Uint8Array
+    ): void {
+      const follower = new FollowerDoc()
+      adapter.bind(workflowId, follower)
+      follower.applyRemoteUpdate(update)
+      onTestFinished(() => follower.destroy())
+    }
+
     it('retains the live links incident to a protected local-only node, but still sweeps other stale links', () => {
       const deleteLayouts = vi.fn()
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => scope,
-        layout: { createNode: vi.fn(), deleteNodes: deleteLayouts }
-      })
-      const context = {
-        source: 'agent-remote' as const,
-        actor: 'local-hydration',
-        opId: 'local-seed'
-      }
+      const mutations = localOnlyMutations({ deleteNodes: deleteLayouts })
       // Node 1 will be doc-retained; node 99 is local-only. Link 99 connects
       // them (must be protected alongside node 99); link 98 is an unrelated
       // stale self-loop on node 1 (must still be swept -- protection is
@@ -1522,7 +1560,7 @@ describe('EcsFollowerAdapter integration', () => {
           inputs: [{ name: 'in', type: 'IMAGE', link: 98 }],
           outputs: [{ name: 'out', type: 'IMAGE', links: [98, 99] }]
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       mutations.addNode(
         {
@@ -1532,7 +1570,7 @@ describe('EcsFollowerAdapter integration', () => {
           inputs: [{ name: 'in', type: 'IMAGE', link: 99 }],
           outputs: []
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       mutations.connect(
         {
@@ -1543,7 +1581,7 @@ describe('EcsFollowerAdapter integration', () => {
           targetSlot: 0,
           type: 'IMAGE'
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       mutations.connect(
         {
@@ -1554,28 +1592,23 @@ describe('EcsFollowerAdapter integration', () => {
           targetSlot: 0,
           type: 'IMAGE'
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       deleteLayouts.mockClear()
 
-      const host = mint(
-        {
-          nodes: [{ id: 1, type: 'Source', inputs: [], outputs: [] }],
-          links: []
-        },
-        catalog
-      )
-      const follower = new FollowerDoc()
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds: () => ({
+        localOnlyGraphIds: () => ({
           nodeIds: new Set(['99']),
           linkIds: new Set([99])
         })
       })
-      adapter.bind('wf', follower)
-      const update = Y.encodeStateAsUpdate(host)
-      follower.applyRemoteUpdate(update)
+      onTestFinished(() => adapter.destroy())
+      const update = mintUpdate({
+        nodes: [{ id: 1, type: 'Source', inputs: [], outputs: [] }],
+        links: []
+      })
+      bindAndApply(adapter, 'wf', update)
 
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
@@ -1596,48 +1629,33 @@ describe('EcsFollowerAdapter integration', () => {
           ?.value
       ).toBe(9)
       expect(deleteLayouts).not.toHaveBeenCalled()
-
-      adapter.destroy()
-      follower.destroy()
-      host.destroy()
     })
 
     it('defers the first full reconcile instead of committing an empty retain set when scope exists but no live graph is available yet', () => {
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => scope,
-        layout: { createNode: vi.fn(), deleteNodes: vi.fn() }
-      })
-      const context = {
-        source: 'agent-remote' as const,
-        actor: 'local-hydration',
-        opId: 'local-seed'
-      }
+      const mutations = localOnlyMutations()
       mutations.addNode(
         { id: 99, type: 'Sink', inputs: [], outputs: [] },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
 
       let graphReady = false
-      const localOnlyNodeIds = vi.fn(() =>
+      const localOnlyGraphIds = vi.fn(() =>
         graphReady
           ? { nodeIds: new Set(['99']), linkIds: new Set<number>() }
           : null
       )
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds
+        localOnlyGraphIds
       })
-      const follower = new FollowerDoc()
-      adapter.bind('wf', follower)
-      const host = mint({ nodes: [], links: [] }, catalog)
-      const update = Y.encodeStateAsUpdate(host)
-      follower.applyRemoteUpdate(update)
+      onTestFinished(() => adapter.destroy())
+      const update = mintUpdate({ nodes: [], links: [] })
+      bindAndApply(adapter, 'wf', update)
 
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         false
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(1)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(1)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
@@ -1648,55 +1666,42 @@ describe('EcsFollowerAdapter integration', () => {
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 2, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(2)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(2)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
           .map(({ id }) => id)
       ).toEqual([toNodeId(99)])
-
-      adapter.destroy()
-      follower.destroy()
-      host.destroy()
     })
 
     it('does not spend the local-only one-shot on a batch its first full reconcile has rejected', () => {
-      const localOnlyNodeIds = vi.fn(() => ({
+      const localOnlyGraphIds = vi.fn(() => ({
         nodeIds: new Set(['99']),
         linkIds: new Set<number>()
       }))
       let scopeAvailable = false
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => (scopeAvailable ? scope : null),
-        layout: { createNode: vi.fn(), deleteNodes: vi.fn() }
+      const mutations = localOnlyMutations({
+        getScope: () => (scopeAvailable ? scope : null)
       })
-      const context = {
-        source: 'agent-remote' as const,
-        actor: 'local-hydration',
-        opId: 'local-seed'
-      }
       scopeAvailable = true
       mutations.addNode(
         { id: 99, type: 'Sink', inputs: [], outputs: [] },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
 
-      const host = mint({ nodes: [], links: [] }, catalog)
-      const follower = new FollowerDoc()
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds
+        localOnlyGraphIds
       })
-      adapter.bind('wf', follower)
-      const update = Y.encodeStateAsUpdate(host)
-      follower.applyRemoteUpdate(update)
+      onTestFinished(() => adapter.destroy())
+      const update = mintUpdate({ nodes: [], links: [] })
+      bindAndApply(adapter, 'wf', update)
 
       scopeAvailable = false
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         false
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(1)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(1)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
@@ -1707,50 +1712,36 @@ describe('EcsFollowerAdapter integration', () => {
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 2, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(2)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(2)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
           .map(({ id }) => id)
       ).toEqual([toNodeId(99)])
-
-      adapter.destroy()
-      follower.destroy()
-      host.destroy()
     })
 
     it('keeps the local-only one-shot armed across an unbind/rebind that never got a completed reconcile', () => {
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => scope,
-        layout: { createNode: vi.fn(), deleteNodes: vi.fn() }
-      })
-      const context = {
-        source: 'agent-remote' as const,
-        actor: 'local-hydration',
-        opId: 'local-seed'
-      }
+      const mutations = localOnlyMutations()
       mutations.addNode(
         { id: 99, type: 'Sink', inputs: [], outputs: [] },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
 
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds: () => ({
+        localOnlyGraphIds: () => ({
           nodeIds: new Set(['99']),
           linkIds: new Set<number>()
         })
       })
+      onTestFinished(() => adapter.destroy())
       const followerA = new FollowerDoc()
+      onTestFinished(() => followerA.destroy())
       adapter.bind('wf', followerA)
       adapter.unbind('wf')
-      const followerB = new FollowerDoc()
-      adapter.bind('wf', followerB)
 
-      const host = mint({ nodes: [], links: [] }, catalog)
-      const update = Y.encodeStateAsUpdate(host)
-      followerB.applyRemoteUpdate(update)
+      const update = mintUpdate({ nodes: [], links: [] })
+      bindAndApply(adapter, 'wf', update)
 
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
@@ -1760,63 +1751,39 @@ describe('EcsFollowerAdapter integration', () => {
           .getGraphNodesFor('root', 'root')
           .map(({ id }) => id)
       ).toEqual([toNodeId(99)])
-
-      adapter.destroy()
-      followerA.destroy()
-      followerB.destroy()
-      host.destroy()
     })
 
     it('prunes protectedWorkflowIds on destroy, so a reused adapter treats a rebound workflow as a first bind again', () => {
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => scope,
-        layout: { createNode: vi.fn(), deleteNodes: vi.fn() }
-      })
-      const localOnlyNodeIds = vi.fn(() => ({
+      const mutations = localOnlyMutations()
+      const localOnlyGraphIds = vi.fn(() => ({
         nodeIds: new Set<string>(),
         linkIds: new Set<number>()
       }))
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds
+        localOnlyGraphIds
       })
-      const followerA = new FollowerDoc()
-      adapter.bind('wf', followerA)
-      const host = mint({ nodes: [], links: [] }, catalog)
-      const update = Y.encodeStateAsUpdate(host)
-      followerA.applyRemoteUpdate(update)
+      onTestFinished(() => adapter.destroy())
+      const update = mintUpdate({ nodes: [], links: [] })
+      bindAndApply(adapter, 'wf', update)
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(1)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(1)
 
+      // A mid-test destroy/reuse, not the teardown above: `bind` on the same
+      // adapter instance afterward must treat 'wf' as unprotected again.
       adapter.destroy()
-      followerA.destroy()
 
-      const followerB = new FollowerDoc()
-      adapter.bind('wf', followerB)
-      followerB.applyRemoteUpdate(update)
+      bindAndApply(adapter, 'wf', update)
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(2)
-
-      followerB.destroy()
-      host.destroy()
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(2)
     })
 
     it('sweeps a previously protected local-only node and link on a later rebind, without consulting the local-only hook again', () => {
-      const mutations = createGraphMutations({
-        placement: inertPlacementPort,
-        getScope: () => scope,
-        layout: { createNode: vi.fn(), deleteNodes: vi.fn() }
-      })
-      const context = {
-        source: 'agent-remote' as const,
-        actor: 'local-hydration',
-        opId: 'local-seed'
-      }
+      const mutations = localOnlyMutations()
       mutations.addNode(
         {
           id: 1,
@@ -1824,7 +1791,7 @@ describe('EcsFollowerAdapter integration', () => {
           inputs: [],
           outputs: [{ name: 'out', type: 'IMAGE', links: [99] }]
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       mutations.addNode(
         {
@@ -1833,7 +1800,7 @@ describe('EcsFollowerAdapter integration', () => {
           inputs: [{ name: 'in', type: 'IMAGE', link: 99 }],
           outputs: []
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
       mutations.connect(
         {
@@ -1844,52 +1811,45 @@ describe('EcsFollowerAdapter integration', () => {
           targetSlot: 0,
           type: 'IMAGE'
         },
-        context
+        LOCAL_HYDRATION_CONTEXT
       )
 
-      const localOnlyNodeIds = vi.fn(() => ({
+      const localOnlyGraphIds = vi.fn(() => ({
         nodeIds: new Set(['99']),
         linkIds: new Set([99])
       }))
       const adapter = new EcsFollowerAdapter(mutations, {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds
+        localOnlyGraphIds
       })
-      const host = mint(
-        {
-          nodes: [{ id: 1, type: 'Source', inputs: [], outputs: [] }],
-          links: []
-        },
-        catalog
-      )
-      const update = Y.encodeStateAsUpdate(host)
+      onTestFinished(() => adapter.destroy())
+      const update = mintUpdate({
+        nodes: [{ id: 1, type: 'Source', inputs: [], outputs: [] }],
+        links: []
+      })
 
-      const followerA = new FollowerDoc()
-      adapter.bind('wf', followerA)
-      followerA.applyRemoteUpdate(update)
+      bindAndApply(adapter, 'wf', update)
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(1)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(1)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
           .map(({ id }) => id)
       ).toEqual([toNodeId(1), toNodeId(99)])
 
-      // Unbind/rebind (a tab-switch-return) to a document that still omits
-      // node 99 and link 99. This workflow's first protected reconcile has
-      // already committed, so this rebind must stay authoritative to the
-      // doc instead of asking the local-only hook again.
+      // Unbind/rebind (a tab-switch-return) to the same document state, which
+      // still omits node 99 and link 99. This workflow's first protected
+      // reconcile has already committed, so this rebind must stay
+      // authoritative to the doc instead of asking the local-only hook again.
       adapter.unbind('wf')
-      const followerB = new FollowerDoc()
-      adapter.bind('wf', followerB)
-      followerB.applyRemoteUpdate(update)
+      bindAndApply(adapter, 'wf', update)
 
       expect(adapter.applyFrame({ workflowId: 'wf', seq: 1, update })).toBe(
         true
       )
-      expect(localOnlyNodeIds).toHaveBeenCalledTimes(1)
+      expect(localOnlyGraphIds).toHaveBeenCalledTimes(1)
       expect(
         useNodeDataStore()
           .getGraphNodesFor('root', 'root')
@@ -1898,11 +1858,87 @@ describe('EcsFollowerAdapter integration', () => {
       expect(
         useLinkStore().getTopology(scope.rootGraphId, toLinkId(99))
       ).toBeUndefined()
+    })
 
-      adapter.destroy()
-      followerA.destroy()
-      followerB.destroy()
-      host.destroy()
+    it('composes a real observe/ever-seen classifier with a freshly recreated adapter across a remount, so a genuine remote delete is swept but a hand-added node survives', () => {
+      const everSeenDocNodeIds = new Set<string>()
+      const liveNodeIds = new Set(['1', '99'])
+      // Mirrors `useAgentCrdtFollower.ts`'s `localOnlyGraphIds`: live node
+      // ids this classifier's own doc history has never seen. Unlike the
+      // fixed callbacks the other cases in this block use,
+      // `everSeenDocNodeIds` is the composition seam under test -- it
+      // survives the adapter recreated below exactly as
+      // `agentCrdtDocHistoryStore` survives a real remount.
+      const localOnlyGraphIds = (
+        workflowId: string
+      ): LocalOnlyGraphIds | null =>
+        workflowId !== 'wf'
+          ? null
+          : {
+              nodeIds: new Set(
+                [...liveNodeIds].filter((id) => !everSeenDocNodeIds.has(id))
+              ),
+              linkIds: new Set<number>()
+            }
+      const mutations = localOnlyMutations()
+      mutations.addNode(
+        { id: 99, type: 'Sink', inputs: [], outputs: [] },
+        LOCAL_HYDRATION_CONTEXT
+      )
+
+      // Observe: the doc holds node 1 only; node 99 is hand-added and has
+      // never appeared in this session's doc history, so the classifier
+      // marks it local-only and the reconcile retains it alongside node 1.
+      const firstAdapter = new EcsFollowerAdapter(mutations, {
+        pendingDeletes: () => new Set(),
+        localOnlyGraphIds
+      })
+      const observedUpdate = mintUpdate({
+        nodes: [{ id: 1, type: 'Source', inputs: [], outputs: [] }],
+        links: []
+      })
+      bindAndApply(firstAdapter, 'wf', observedUpdate)
+      everSeenDocNodeIds.add('1')
+      expect(
+        firstAdapter.applyFrame({
+          workflowId: 'wf',
+          seq: 1,
+          update: observedUpdate
+        })
+      ).toBe(true)
+      expect(
+        useNodeDataStore()
+          .getGraphNodesFor('root', 'root')
+          .map(({ id }) => id)
+      ).toEqual([toNodeId(99), toNodeId(1)])
+      firstAdapter.destroy()
+
+      // Delete + remount: a brand-new adapter instance (its own
+      // `protectedWorkflowIds` starts empty again, so it treats 'wf' as an
+      // unprotected first bind), sharing the same classifier closure --
+      // exactly the production wiring after `useAgentCrdtFollower` unmounts
+      // and remounts. Node 1 was already seen, so the classifier still
+      // excludes it and the fresh adapter's first reconcile sweeps it as a
+      // genuine remote delete; node 99 was never seen and stays protected.
+      const secondAdapter = new EcsFollowerAdapter(mutations, {
+        pendingDeletes: () => new Set(),
+        localOnlyGraphIds
+      })
+      onTestFinished(() => secondAdapter.destroy())
+      const rebindUpdate = mintUpdate({ nodes: [], links: [] })
+      bindAndApply(secondAdapter, 'wf', rebindUpdate)
+      expect(
+        secondAdapter.applyFrame({
+          workflowId: 'wf',
+          seq: 1,
+          update: rebindUpdate
+        })
+      ).toBe(true)
+      expect(
+        useNodeDataStore()
+          .getGraphNodesFor('root', 'root')
+          .map(({ id }) => id)
+      ).toEqual([toNodeId(99)])
     })
   })
 })

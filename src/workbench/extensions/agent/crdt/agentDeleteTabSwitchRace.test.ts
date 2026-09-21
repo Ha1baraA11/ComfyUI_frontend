@@ -129,7 +129,7 @@ function setupRaceUntilReturn() {
           .filter((op) => op.op === 'delete_node')
           .map((op) => String(op.node_id))
       ),
-    localOnlyNodeIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
+    localOnlyGraphIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
   })
   adapter.bind(WORKFLOW, follower)
 

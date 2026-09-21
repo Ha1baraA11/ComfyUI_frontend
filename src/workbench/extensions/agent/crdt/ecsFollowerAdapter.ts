@@ -77,12 +77,12 @@ export interface LocalIntent {
    * `removeMissing` -- nor its incident links, which `removeMissing` would
    * otherwise sweep right alongside a node it does retain.
    */
-  localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
+  localOnlyGraphIds(workflowId: string): LocalOnlyGraphIds | null
 }
 
 const NO_LOCAL_INTENT: LocalIntent = {
   pendingDeletes: () => new Set(),
-  localOnlyNodeIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
+  localOnlyGraphIds: () => ({ nodeIds: new Set(), linkIds: new Set() })
 }
 
 function plain(value: unknown): unknown {
@@ -380,16 +380,6 @@ interface TargetSession {
   onLinksChanged: (event: Y.YMapEvent<unknown>) => void
   reconcileNextFrame: boolean
   applying: boolean
-  /**
-   * One-shot: true until this workflow's first full reconcile actually
-   * *completes* with `localOnlyNodeIds` consulted (see
-   * `protectedWorkflowIds`), so a rebind before that happens (a rejected
-   * first batch, a quick unbind/rebind before any frame lands) leaves the
-   * shot available for the retry instead of burning it on a no-op. False for
-   * a tab-switch-return rebind once that has happened, which must stay
-   * authoritative to the doc.
-   */
-  protectLocalOnlyOnce: boolean
 }
 
 /**
@@ -402,10 +392,13 @@ export class EcsFollowerAdapter {
   private readonly targets = new Map<string, TargetSession>()
   /**
    * Workflow ids whose first full reconcile has completed with
-   * `localOnlyNodeIds` actually consulted (see `applyQueuedFrame`), for the
+   * `localOnlyGraphIds` actually consulted (see `applyQueuedFrame`), for the
    * lifetime of this adapter. Marked there, not at `bind` time, so a bind
    * that never gets a completed protected reconcile (a rejected first batch,
    * a rebind before any frame lands) leaves the next bind eligible again.
+   * The one and only record of protection eligibility -- a session's
+   * one-shot is derived from it (`needsProtection`), never tracked
+   * separately, so the two can never diverge.
    */
   private readonly protectedWorkflowIds = new Set<string>()
 
@@ -414,10 +407,21 @@ export class EcsFollowerAdapter {
     private readonly intent: LocalIntent = NO_LOCAL_INTENT
   ) {}
 
+  /**
+   * One-shot: true until this workflow's first full reconcile actually
+   * *completes* with `localOnlyGraphIds` consulted (see `protectedWorkflowIds`),
+   * so a rebind before that happens (a rejected first batch, a quick
+   * unbind/rebind before any frame lands) leaves the shot available for the
+   * retry instead of burning it on a no-op. False for a tab-switch-return
+   * rebind once that has happened, which must stay authoritative to the doc.
+   */
+  private needsProtection(workflowId: string): boolean {
+    return !this.protectedWorkflowIds.has(workflowId)
+  }
+
   bind(workflowId: string, follower: FollowerDoc): void {
     this.unbind(workflowId)
-    const needsProtection = !this.protectedWorkflowIds.has(workflowId)
-    const session = this.createSession(workflowId, follower, needsProtection)
+    const session = this.createSession(workflowId, follower)
     this.targets.set(workflowId, session)
     session.nodes.observeDeep(session.onNodesChanged)
     session.links.observe(session.onLinksChanged)
@@ -473,8 +477,7 @@ export class EcsFollowerAdapter {
 
   private createSession(
     workflowId: string,
-    follower: FollowerDoc,
-    needsProtection: boolean
+    follower: FollowerDoc
   ): TargetSession {
     const session: TargetSession = {
       workflowId,
@@ -495,7 +498,6 @@ export class EcsFollowerAdapter {
       frameQueue: [],
       reconcileNextFrame: true,
       applying: false,
-      protectLocalOnlyOnce: needsProtection,
       onNodesChanged: (_events): void => undefined,
       onLinksChanged: (_event): void => undefined
     }
@@ -560,13 +562,16 @@ export class EcsFollowerAdapter {
     const removedLinkIds = [...changedLinks].flatMap(([id, link]) =>
       link && !isIncompatibleLinkType(link) ? [] : [Number(id)]
     )
-    // Asked, and possibly spent (see below), before `batch` runs: only this
-    // session's first full reconcile asks at all, and `null` (no live graph,
-    // or a workflow this caller has not bound) is kept distinct from an
-    // empty result so a no-op frame never spends the one-shot.
+    // Asked before `batch` runs, while this workflow's protection is still
+    // unclaimed (see `needsProtection`): a null result (no live graph yet) or
+    // a rejected batch leaves it unclaimed, so a later frame asks again --
+    // only a committed reconcile that got a non-null answer spends it, below.
+    // `null` is kept distinct from an empty result so a no-op frame never
+    // spends the one-shot.
+    const needsProtection = this.needsProtection(session.workflowId)
     const localOnly =
-      reconcile && session.protectLocalOnlyOnce
-        ? this.intent.localOnlyNodeIds(session.workflowId)
+      reconcile && needsProtection
+        ? this.intent.localOnlyGraphIds(session.workflowId)
         : null
     // Protection is required for this frame's full reconcile but currently
     // unavailable (no live graph yet, though workflow scope already exists).
@@ -575,7 +580,7 @@ export class EcsFollowerAdapter {
     // stores this frame already pruned. Defer instead: leave the store
     // untouched and keep `reconcileNextFrame` armed for a later frame where
     // protection can actually be consulted.
-    if (reconcile && session.protectLocalOnlyOnce && localOnly === null) {
+    if (reconcile && needsProtection && localOnly === null) {
       session.reconcileNextFrame = true
       return false
     }
@@ -730,12 +735,12 @@ export class EcsFollowerAdapter {
     })
 
     // The one-shot is spent only once a reconcile that actually consulted
-    // `localOnlyNodeIds` (`localOnly !== null`) also *committed*: a rejected
+    // `localOnlyGraphIds` (`localOnly !== null`) also *committed*: a rejected
     // batch must leave it armed for the retry, and a frame where the caller
     // had nothing to protect with (no live graph yet) must leave it armed
-    // for whenever one becomes available.
+    // for whenever one becomes available. `protectedWorkflowIds` is the only
+    // record of that -- `needsProtection` reads straight from it.
     if (committed && localOnly !== null) {
-      session.protectLocalOnlyOnce = false
       this.protectedWorkflowIds.add(session.workflowId)
     }
     // The pending sets were snapshotted and cleared before `batch` ran, so a

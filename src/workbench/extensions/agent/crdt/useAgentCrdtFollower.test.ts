@@ -15,6 +15,7 @@ import { render } from '@testing-library/vue'
 import { fromPartial } from '@total-typescript/shoehorn'
 
 import type { GraphMutations } from './graphMutations'
+import { LGraph, LGraphNode } from '@/lib/litegraph/src/litegraph'
 import type { ExportedSubgraph } from '@/lib/litegraph/src/types/serialisation'
 import type { reportError as reportErrorFn } from '@/platform/telemetry/reportError'
 import type { NodeId } from '@/types/nodeId'
@@ -57,7 +58,7 @@ const clientState = vi.hoisted(() => ({
 const adapterState = vi.hoisted(() => ({
   intent: null as {
     pendingDeletes(workflowId: string): ReadonlySet<string>
-    localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
+    localOnlyGraphIds(workflowId: string): LocalOnlyGraphIds | null
   } | null,
   bind: vi.fn(),
   unbind: vi.fn(),
@@ -130,7 +131,7 @@ vi.mock<unknown>(import('./ecsFollowerAdapter'), () => ({
       _mutations: unknown,
       intent: {
         pendingDeletes(workflowId: string): ReadonlySet<string>
-        localOnlyNodeIds(workflowId: string): LocalOnlyGraphIds | null
+        localOnlyGraphIds(workflowId: string): LocalOnlyGraphIds | null
       }
     ) {
       adapterState.intent = intent
@@ -1283,17 +1284,21 @@ describe('useAgentCrdtFollower', () => {
     })
   })
 
-  describe('localOnlyNodeIds (first-reconcile local-only protection hook)', () => {
+  describe('localOnlyGraphIds (first-reconcile local-only protection hook)', () => {
+    /** A real `LGraph` with real nodes at `ids` -- satisfies `MaterializableGraph` structurally, no cast needed. */
+    function graphWithNodes(...ids: NodeId[]): LGraph {
+      const graph = new LGraph()
+      graph.id = 'root'
+      for (const id of ids) {
+        const node = new LGraphNode('Test')
+        node.id = id
+        graph.add(node)
+      }
+      return graph
+    }
+
     it('excludes a node the doc has ever held even after it drops from the current snapshot, but still flags one the doc never held', () => {
-      const fakeGraph = {
-        rootGraph: { subgraphs: new Map() },
-        setDirtyCanvas: vi.fn(),
-        _nodes: [{ id: toNodeId(1) }, { id: toNodeId(2) }],
-        _nodes_by_id: {
-          [toNodeId(1)]: { inputs: [], outputs: [] },
-          [toNodeId(2)]: { inputs: [], outputs: [] }
-        }
-      } as unknown as MaterializableGraph
+      const fakeGraph = graphWithNodes(toNodeId(1), toNodeId(2))
       const { unmount } = mountFollower('wf-1', true, () => fakeGraph)
       const intent = adapterState.intent!
       let docNodes: Record<string, unknown> = { '1': {} }
@@ -1308,30 +1313,52 @@ describe('useAgentCrdtFollower', () => {
       // hand-added, never-seen node. Node 2 genuinely never appeared in any
       // doc frame, so it alone is flagged as local-only.
       docNodes = {}
-      expect(intent.localOnlyNodeIds('wf-1')).toEqual({
+      expect(intent.localOnlyGraphIds('wf-1')).toEqual({
         nodeIds: new Set(['2']),
         linkIds: new Set()
       })
       unmount()
     })
 
+    it('excludes a node the doc has ever held even across an unmount and remount, so a remote delete observed while unmounted is not resurrected', () => {
+      const fakeGraph = graphWithNodes(toNodeId(1))
+      const first = mountFollower('wf-1', true, () => fakeGraph)
+      bridge().follower.doc.getMap = () => ({ toJSON: () => ({ '1': {} }) })
+
+      // The doc shows node 1 -- remembered as "ever held" before this
+      // client unmounts (a panel close, a component remount).
+      dispatchFrame('doc_update', { workflowId: 'wf-1', seq: 1 })
+      first.unmount()
+
+      // Remotely deleted while this client was unmounted. The remounted
+      // composable gets a fresh in-memory adapter and a live graph that
+      // still holds the pre-delete node (its own local reconstruction
+      // has not caught up to the doc's delete yet).
+      const second = mountFollower('wf-1', true, () => fakeGraph)
+      bridge().follower.doc.getMap = () => ({ toJSON: () => ({}) })
+      const intent = adapterState.intent!
+
+      expect(intent.localOnlyGraphIds('wf-1')).toEqual({
+        nodeIds: new Set(),
+        linkIds: new Set()
+      })
+      second.unmount()
+    })
+
     it('does not spend the one-shot on a frame where no live graph is available to protect anything', () => {
       const { unmount } = mountFollower('wf-1')
       const intent = adapterState.intent!
 
-      expect(intent.localOnlyNodeIds('wf-1')).toBeNull()
+      expect(intent.localOnlyGraphIds('wf-1')).toBeNull()
       unmount()
     })
 
     it('never answers for a workflow other than the one this session has bound', () => {
-      const fakeGraph = {
-        _nodes: [{ id: toNodeId(1) }],
-        _nodes_by_id: { [toNodeId(1)]: { inputs: [], outputs: [] } }
-      } as unknown as MaterializableGraph
+      const fakeGraph = graphWithNodes(toNodeId(1))
       const { unmount } = mountFollower('wf-1', true, () => fakeGraph)
       const intent = adapterState.intent!
 
-      expect(intent.localOnlyNodeIds('wf-2')).toBeNull()
+      expect(intent.localOnlyGraphIds('wf-2')).toBeNull()
       unmount()
     })
   })

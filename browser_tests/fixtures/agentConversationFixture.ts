@@ -7,6 +7,7 @@ import { createI18n } from 'vue-i18n'
 
 import enMessages from '@/locales/en/main.json' with { type: 'json' }
 import type { UserDataFullInfo } from '@/platform/remote/comfyui/types'
+import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { ObjectInfoResponse } from '@/schemas/nodeDefSchema'
 import { blankWorkflowGraph } from '@/scripts/blankWorkflowGraph'
 import { toNodeId } from '@/types/nodeId'
@@ -103,6 +104,13 @@ export interface NodeLens {
   serialized: string[]
   activeState: string[]
   observer: TabSwitchLens | null
+}
+
+// The shape `installBlankStartupGraph`'s page-context patch needs from
+// `window.app`, not the full `ComfyApp` -- that patch runs in the browser,
+// before any bundled module (including `ComfyApp` itself) is importable there.
+interface LoadGraphDataHost {
+  loadGraphData: (graphData?: unknown, ...rest: unknown[]) => unknown
 }
 
 async function attachJson(
@@ -251,6 +259,7 @@ export class AgentConversationHarness {
   }
 
   async boot(agentFlag: boolean): Promise<void> {
+    await this.installBlankStartupGraph()
     await this.mockAgentApi()
     await this.hostSocket.install()
     const objectInfo = this.page.waitForResponse((response) =>
@@ -270,45 +279,61 @@ export class AgentConversationHarness {
       this.displayNames.set(type, definition.display_name || definition.name)
 
     // GraphCanvas mounts after `window.app` already exists and only then
-    // awaits initializeWorkflow()/restoreWorkflowTabsState(), which load the
-    // stock starter template because the unauthenticated boot has no
-    // persisted workflow. Wait for that startup spinner to clear before
-    // touching the graph, otherwise its own default-graph load can land
-    // after ours and win the race, leaving the stock template's nodes (and
-    // sometimes a second tab) behind.
+    // awaits initializeWorkflow()/restoreWorkflowTabsState(). Wait for that
+    // startup spinner to clear before touching the graph: `installBlankStartupGraph`
+    // has already made that startup load the blank workflow directly, so
+    // there is nothing left to race here, just the mount to finish.
     await this.page.getByTestId(TestIds.app.loadingOverlay).waitFor({
       state: 'hidden',
       timeout: PANEL_MOUNT_TIMEOUT
     })
-
-    // The follower's first-ever bind now protects whatever the doc has never
-    // held (agent-crdt-first-bind-node-flicker), so that stock template would
-    // otherwise survive alongside the replayed conversation. Clear it before
-    // opening the panel: every recorded-conversation assertion here expects
-    // the canvas to end up holding exactly the conversation's own nodes.
-    //
-    // Passing the active workflow as loadGraphData's 4th argument matters as
-    // much as the clear itself: omitting it (as a bare
-    // `loadGraphData(json, true, true)` does) repaints the canvas but leaves
-    // `activeWorkflow.changeTracker.activeState` holding the stock template,
-    // because `afterLoadNewGraph` only resyncs that tracked state when it is
-    // handed a real `ComfyWorkflow` (see workflowService.ts's
-    // `activateLoadedWorkflow`). The agent panel's own active-tab handling
-    // (`onAgentActiveTab` in AgentPanelRoot.vue) re-opens this same workflow
-    // once the conversation's first turn names it, and `openWorkflow()`
-    // reloads from that stale `activeState` — silently reintroducing the
-    // stock template's nodes mid-conversation, well after this clear ran.
-    await this.page.evaluate((json) => {
-      const activeWorkflow =
-        window.app!.extensionManager.workflow.activeWorkflow
-      return window.app!.loadGraphData(json, true, true, activeWorkflow)
-    }, blankWorkflowGraph)
 
     await this.page
       .getByRole('button', { name: OPEN_AGENT_LABEL, exact: true })
       .click()
     await expect(this.panel).toBeVisible({ timeout: PANEL_MOUNT_TIMEOUT })
     await this.selectWorkflowTarget()
+  }
+
+  /**
+   * Startup falls through to `resolveStartupOutcome` (there is no persisted
+   * workflow in a fresh mocked-cloud boot), which calls
+   * `comfyApp.loadGraphData()` with no explicit graph -- loading the stock
+   * starter template (`defaultGraph`). The follower's first-ever bind now
+   * protects whatever the doc has never held
+   * (agent-crdt-first-bind-node-flicker), so that stock template would
+   * otherwise survive alongside the replayed conversation; every
+   * recorded-conversation assertion here expects the canvas to end up
+   * holding exactly the conversation's own nodes.
+   *
+   * Rather than clearing the stock template with a second `loadGraphData`
+   * call after boot -- which left `activeWorkflow`'s tracked state pointed at
+   * the stock template unless also handed the already-active workflow
+   * instance, and which replays as a mutation of an active workflow rather
+   * than a real "open" (no camera refit, stale missing-model cache, the
+   * LoadImage placeholder never resolving) -- make the blank workflow the
+   * startup load itself. `window.app` and the module-level `comfyApp` that
+   * `useWorkflowPersistenceV2` imports are the same singleton instance, so
+   * wrapping `loadGraphData` the moment `window.app` is assigned intercepts
+   * that startup call before it ever reaches `defaultGraph`.
+   */
+  private async installBlankStartupGraph(): Promise<void> {
+    await this.page.addInitScript((blank: ComfyWorkflowJSON) => {
+      let patched = false
+      let appRef: LoadGraphDataHost | undefined
+      Object.defineProperty(window, 'app', {
+        configurable: true,
+        get: () => appRef,
+        set: (value: LoadGraphDataHost | undefined) => {
+          appRef = value
+          if (patched || typeof value?.loadGraphData !== 'function') return
+          patched = true
+          const original = value.loadGraphData.bind(value)
+          value.loadGraphData = (graphData?: unknown, ...rest: unknown[]) =>
+            original(graphData ?? blank, ...rest)
+        }
+      })
+    }, blankWorkflowGraph)
   }
 
   private async selectWorkflowTarget(): Promise<void> {

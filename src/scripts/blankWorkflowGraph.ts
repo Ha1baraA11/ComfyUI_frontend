@@ -1,8 +1,8 @@
 import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 
 /**
- * The empty nine-field workflow document. Kept in its own leaf module (no
- * runtime imports, so no `import.meta.env` read at module scope) so both
+ * The empty workflow document. Kept in its own leaf module (no runtime
+ * imports, so no `import.meta.env` read at module scope) so both
  * `defaultGraph.ts` and environment-free consumers such as Playwright
  * fixtures can import the same value instead of hand-maintaining copies.
  */

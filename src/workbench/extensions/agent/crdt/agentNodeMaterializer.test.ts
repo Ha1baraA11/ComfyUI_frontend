@@ -441,7 +441,7 @@ describe('reconcileAgentAdapters', () => {
       // production's classifier.
       const adapter = new EcsFollowerAdapter(remoteMutations(scope), {
         pendingDeletes: () => new Set(),
-        localOnlyNodeIds: () => ({
+        localOnlyGraphIds: () => ({
           nodeIds: new Set([String(handAdded.id)]),
           linkIds: new Set()
         })
