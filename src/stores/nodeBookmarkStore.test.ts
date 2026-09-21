@@ -42,7 +42,7 @@ describe('node bookmark folder commands', () => {
     expect(useNodeBookmarkStore().bookmarkedRoot.children).toEqual([])
   })
 
-  it.fails.for([
+  it.for([
     {
       name: 'non-folder rename',
       error: 'Cannot rename non-folder node',
@@ -111,7 +111,7 @@ describe('node bookmark folder commands', () => {
     )
   })
 
-  it.fails('persists a successful folder deletion', async () => {
+  it('persists a successful folder deletion', async () => {
     const settingStore = useSettingStore()
     await expect(
       useNodeBookmarkStore().deleteBookmarkFolder(folder('Folder/'))

@@ -442,7 +442,6 @@ This is English documentation.
       test('Falls back to nonlocalized custom-node docs after a locale request fails', async ({
         comfyPage
       }) => {
-        test.fail()
         const customNode = await comfyPage.nodeOps.getNodeRefByType(
           helpFallbackNodeDef.name
         )

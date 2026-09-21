@@ -104,7 +104,6 @@ test.describe('Subgraph CRUD', { tag: ['@slow', '@subgraph'] }, () => {
       test('Empty selection conversion shows an error toast and leaves the graph unchanged', async ({
         comfyPage
       }) => {
-        test.fail()
         const initialCount = await comfyPage.nodeOps.getGraphNodesCount()
         await comfyPage.command.executeCommand('Comfy.Graph.ConvertToSubgraph')
 

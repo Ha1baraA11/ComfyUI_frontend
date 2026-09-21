@@ -20,8 +20,6 @@ test.describe('Stale background task polling', { tag: ['@ui'] }, () => {
       comfyPage,
       staleTasks: { downloadToast, taskRequests }
     }) => {
-      test.fail()
-
       await test.step('Show the running download', async () => {
         await expect(downloadToast).toBeVisible()
         await downloadToast.getByRole('button', { name: 'Expand' }).click()
@@ -72,8 +70,6 @@ test.describe('Stale background task polling', { tag: ['@ui'] }, () => {
       comfyPage,
       staleTasks: { exportToast, taskRequests, downloadRequests }
     }) => {
-      test.fail()
-
       await test.step('Show the populated running export', async () => {
         await expect(exportToast).toBeVisible()
         await exportToast.getByRole('button', { name: 'Expand' }).click()
