@@ -9137,6 +9137,7 @@
     }
   },
   "JsonExtractString": {
+    "description": "텍스트에서 Markdown 코드 블록을 포함해 첫 번째 유효한 JSON 객체의 키 값을 추출합니다.",
     "display_name": "JSON에서 문자열 추출",
     "inputs": {
       "json_string": {

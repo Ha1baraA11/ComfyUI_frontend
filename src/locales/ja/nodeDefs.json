@@ -9137,6 +9137,7 @@
     }
   },
   "JsonExtractString": {
+    "description": "テキスト内の最初の有効なJSONオブジェクトから、Markdownコードブロックを含めてキーの値を抽出します。",
     "display_name": "JSONから文字列を抽出",
     "inputs": {
       "json_string": {
